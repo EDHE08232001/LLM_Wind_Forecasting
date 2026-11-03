@@ -6,7 +6,7 @@
   powershell -ExecutionPolicy Bypass -File .\setup_env.ps1
   .\setup_env.ps1 -Download            # also download the dataset
   .\setup_env.ps1 -Cpu                 # force CPU-only PyTorch
-  .\setup_env.ps1 -Cuda cu130          # force a CUDA wheel index
+  .\setup_env.ps1 -Cuda cu134          # force a CUDA wheel index
   .\setup_env.ps1 -NoChronos           # skip Chronos-2 / transformers / peft
   .\setup_env.ps1 -QLoRA               # also install bitsandbytes (4-bit QLoRA)
   .\setup_env.ps1 -Python "py -3.12" -Recreate
@@ -67,6 +67,7 @@ function Get-CudaTag {
     $m = [regex]::Match($out, "CUDA Version:\s*(\d+)\.(\d+)")
     if (-not $m.Success) { return "" }
     $n = [int]$m.Groups[1].Value * 10 + [int]$m.Groups[2].Value
+    if ($n -ge 134) { return "cu134" }
     if ($n -ge 132) { return "cu132" }
     if ($n -ge 130) { return "cu130" }
     if ($n -ge 129) { return "cu129" }

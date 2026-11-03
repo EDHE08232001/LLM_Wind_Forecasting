@@ -5,7 +5,7 @@ REM
 REM   setup_env.bat                 auto-detect GPU, install everything
 REM   setup_env.bat --download      ... and download the dataset
 REM   setup_env.bat --cpu           force CPU-only PyTorch
-REM   setup_env.bat --cuda cu130    force a CUDA wheel index
+REM   setup_env.bat --cuda cu134    force a CUDA wheel index
 REM   setup_env.bat --no-chronos    skip Chronos-2 / transformers / peft
 REM   setup_env.bat --qlora         also install bitsandbytes (4-bit QLoRA)
 REM   setup_env.bat --recreate      delete and rebuild venvWin
@@ -88,7 +88,7 @@ for /f "tokens=1,2 delims=." %%A in ("!CUDA_VER!") do (
     set /a "CUDA_N=%%A*10+%%B"
 )
 if not defined CUDA_N goto torch_cpu
-if !CUDA_N! GEQ 132 ( set "CUDA_TAG=cu132" ) else if !CUDA_N! GEQ 130 ( set "CUDA_TAG=cu130" ) else if !CUDA_N! GEQ 129 ( set "CUDA_TAG=cu129" ) else if !CUDA_N! GEQ 128 ( set "CUDA_TAG=cu128" ) else if !CUDA_N! GEQ 126 ( set "CUDA_TAG=cu126" ) else if !CUDA_N! GEQ 118 ( set "CUDA_TAG=cu118" )
+if !CUDA_N! GEQ 134 ( set "CUDA_TAG=cu134" ) else if !CUDA_N! GEQ 132 ( set "CUDA_TAG=cu132" ) else if !CUDA_N! GEQ 130 ( set "CUDA_TAG=cu130" ) else if !CUDA_N! GEQ 129 ( set "CUDA_TAG=cu129" ) else if !CUDA_N! GEQ 128 ( set "CUDA_TAG=cu128" ) else if !CUDA_N! GEQ 126 ( set "CUDA_TAG=cu126" ) else if !CUDA_N! GEQ 118 ( set "CUDA_TAG=cu118" )
 if not defined CUDA_TAG goto torch_cpu
 
 :torch_cuda

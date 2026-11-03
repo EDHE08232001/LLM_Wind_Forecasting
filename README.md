@@ -80,9 +80,12 @@ The setup scripts:
 3. Install the right **PyTorch** build:
    * macOS: the standard wheel, which includes the **MPS** backend on Apple Silicon.
    * NVIDIA: the script reads the driver's CUDA version from `nvidia-smi` and picks the matching wheel
-     index (`cu132`, `cu130`, `cu129`, `cu128`, `cu126` or `cu118`). RTX 50-series (Blackwell) GPUs need
+     index (`cu134`, `cu132`, `cu130`, `cu129`, `cu128`, `cu126` or `cu118`). The wheels bundle the CUDA
+     runtime, so you only need an NVIDIA driver, not the standalone CUDA toolkit. RTX 50-series (Blackwell) GPUs need
      `cu128` or newer, so update the driver if the script picks an older index. To force an index, pass
-     `--cuda cu130` / `-Cuda cu130` or set the `TORCH_CUDA` environment variable.
+     `--cuda cu134` / `-Cuda cu134` or set the `TORCH_CUDA` environment variable. The manual
+     equivalent on Windows is
+     `pip install torch --index-url https://download.pytorch.org/whl/cu134`.
    * No GPU, or `--cpu` / `-Cpu`: the CPU wheel.
 4. Run `pip install -e ".[chronos,dev]"`. Pass `--no-chronos` to skip Chronos-2. Pass `--qlora` to also
    install `bitsandbytes`, which QLoRA needs (NVIDIA only).
