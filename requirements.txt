@@ -1,7 +1,7 @@
 # Plain-pip alternative to `pip install -e ".[chronos,dev]"`.
 # Install torch FIRST with the right wheel for your machine (the setup_env.* scripts do this):
 #   macOS (MPS):     pip install torch
-#   NVIDIA (CUDA):   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   NVIDIA (CUDA):   pip install torch --index-url https://download.pytorch.org/whl/cu134   (no CUDA toolkit needed)
 #   CPU only:        pip install torch --index-url https://download.pytorch.org/whl/cpu
 numpy>=1.24
 pandas>=2.0

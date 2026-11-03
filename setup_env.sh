@@ -7,7 +7,7 @@
 #   ./setup_env.sh                  # auto-detect device, install everything
 #   ./setup_env.sh --download       # ... and download the dataset
 #   ./setup_env.sh --cpu            # force the CPU-only PyTorch wheel
-#   ./setup_env.sh --cuda cu130     # force a specific CUDA wheel (Linux)
+#   ./setup_env.sh --cuda cu134     # force a specific CUDA wheel (Linux)
 #   ./setup_env.sh --no-chronos     # skip Chronos-2 / transformers / peft
 #   ./setup_env.sh --qlora          # also install bitsandbytes (NVIDIA only)
 #   ./setup_env.sh --python python3.12 --recreate
@@ -83,7 +83,8 @@ pick_cuda_tag() {
   [[ -z "$v" ]] && { echo ""; return; }
   major="${v%%.*}"; minor="${v##*.}"
   local n=$((major * 10 + minor))
-  if   (( n >= 132 )); then echo cu132
+  if   (( n >= 134 )); then echo cu134
+  elif (( n >= 132 )); then echo cu132
   elif (( n >= 130 )); then echo cu130
   elif (( n >= 129 )); then echo cu129
   elif (( n >= 128 )); then echo cu128
