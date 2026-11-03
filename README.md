@@ -75,7 +75,8 @@ these numbers.
 
 The setup scripts:
 
-1. Find Python 3.10 to 3.13. 3.11 or 3.12 is recommended; on macOS, install it with `brew install python@3.12`.
+1. Find Python 3.10 to 3.14, preferring the newest. 3.14 is recommended and tested. On macOS, install it with
+   `brew install python@3.14`; on Windows, with `winget install Python.Python.3.14`.
 2. Create the venv. Pass `--recreate` / `-Recreate` to rebuild it.
 3. Install the right **PyTorch** build:
    * macOS: the standard wheel, which includes the **MPS** backend on Apple Silicon.
