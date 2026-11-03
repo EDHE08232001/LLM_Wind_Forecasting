@@ -10,7 +10,7 @@
 #   ./setup_env.sh --cuda cu134     # force a specific CUDA wheel (Linux)
 #   ./setup_env.sh --no-chronos     # skip Chronos-2 / transformers / peft
 #   ./setup_env.sh --qlora          # also install bitsandbytes (NVIDIA only)
-#   ./setup_env.sh --python python3.12 --recreate
+#   ./setup_env.sh --python python3.14 --recreate
 # Afterwards:  source venvMac/bin/activate   (or venvLinux)
 # =============================================================================
 set -euo pipefail
@@ -49,16 +49,16 @@ case "$OS" in
   *) echo "Unsupported OS: $OS"; exit 1 ;;
 esac
 
-# ---------------------------------------------------------------- python >= 3.10
-version_ok() { "$1" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,14) else 1)' 2>/dev/null; }
+# ---------------------------------------------------------------- python 3.10-3.14
+version_ok() { "$1" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) else 1)' 2>/dev/null; }
 if [[ -z "$PYTHON_BIN" ]]; then
-  for cand in python3.12 python3.11 python3.13 python3.10 python3 python; do
+  for cand in python3.14 python3.13 python3.12 python3.11 python3.10 python3 python; do
     if command -v "$cand" >/dev/null 2>&1 && version_ok "$cand"; then PYTHON_BIN="$cand"; break; fi
   done
 fi
 if [[ -z "$PYTHON_BIN" ]] || ! version_ok "$PYTHON_BIN"; then
-  echo "ERROR: need Python 3.10-3.13 (3.11/3.12 recommended)."
-  [[ "$OS" == "Darwin" ]] && echo "  Install with:  brew install python@3.12"
+  echo "ERROR: need Python 3.10-3.14 (3.14 recommended)."
+  [[ "$OS" == "Darwin" ]] && echo "  Install with:  brew install python@3.14"
   exit 1
 fi
 echo ">>> Using $($PYTHON_BIN --version) ($(command -v "$PYTHON_BIN")) on $OS/$ARCH"

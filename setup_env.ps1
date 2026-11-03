@@ -9,7 +9,7 @@
   .\setup_env.ps1 -Cuda cu134          # force a CUDA wheel index
   .\setup_env.ps1 -NoChronos           # skip Chronos-2 / transformers / peft
   .\setup_env.ps1 -QLoRA               # also install bitsandbytes (4-bit QLoRA)
-  .\setup_env.ps1 -Python "py -3.12" -Recreate
+  .\setup_env.ps1 -Python "py -3.14" -Recreate
 
   Afterwards:  .\venvWin\Scripts\Activate.ps1
   (If activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned)
@@ -31,19 +31,19 @@ function Test-PyVersion([string]$cmd) {
     try {
         $parts = $cmd -split " "
         $exe = $parts[0]; $rest = @($parts | Select-Object -Skip 1)
-        & $exe @rest -c "import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,14) else 1)" 2>$null
+        & $exe @rest -c "import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) else 1)" 2>$null
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }
 }
 
 # ------------------------------------------------------------------ python
 if (-not $Python) {
-    foreach ($cand in @("py -3.12", "py -3.11", "py -3.13", "py -3.10", "python", "python3")) {
+    foreach ($cand in @("py -3.14", "py -3.13", "py -3.12", "py -3.11", "py -3.10", "python", "python3")) {
         if (Test-PyVersion $cand) { $Python = $cand; break }
     }
 }
 if (-not $Python -or -not (Test-PyVersion $Python)) {
-    Write-Host "ERROR: need Python 3.10-3.13 (3.11/3.12 recommended). Install from https://www.python.org/downloads/ or: winget install Python.Python.3.12" -ForegroundColor Red
+    Write-Host "ERROR: need Python 3.10-3.14 (3.14 recommended). Install from https://www.python.org/downloads/ or: winget install Python.Python.3.14" -ForegroundColor Red
     exit 1
 }
 $pyParts = $Python -split " "

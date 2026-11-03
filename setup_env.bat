@@ -45,17 +45,17 @@ exit /b 0
 
 REM ---------------------------------------------------------------- python
 set "PY="
-for %%V in (3.12 3.11 3.13 3.10) do (
+for %%V in (3.14 3.13 3.12 3.11 3.10) do (
     if not defined PY (
         py -%%V -c "import sys" >nul 2>&1 && set "PY=py -%%V"
     )
 )
 if not defined PY (
-    python -c "import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,14) else 1)" >nul 2>&1 && set "PY=python"
+    python -c "import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] < (3,15) else 1)" >nul 2>&1 && set "PY=python"
 )
 if not defined PY (
-    echo ERROR: need Python 3.10-3.13 ^(3.11/3.12 recommended^).
-    echo   Install from https://www.python.org/downloads/  or:  winget install Python.Python.3.12
+    echo ERROR: need Python 3.10-3.14 ^(3.14 recommended^).
+    echo   Install from https://www.python.org/downloads/  or:  winget install Python.Python.3.14
     exit /b 1
 )
 echo ^>^>^> Using %PY%

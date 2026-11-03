@@ -38,7 +38,7 @@ instead of a `wind-forecast/` subfolder. These were added:
 
 ## 3. Environment and tooling
 
-* Python 3.11 (3.10+ is fine). Core libraries: numpy, pandas, pyarrow, scikit-learn, xgboost, pyyaml,
+* Python 3.14 (3.10+ is fine). Core libraries: numpy, pandas, pyarrow, scikit-learn, xgboost, pyyaml,
   matplotlib.
 * PyTorch replaces the paper's TensorFlow, with the same architectures.
 * Chronos-2: chronos-forecasting (v2+), transformers, peft (for LoRA), accelerate. bitsandbytes is
