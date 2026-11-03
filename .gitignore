@@ -1,0 +1,139 @@
+# ---------------------------------------------------------------------------
+# Datasets (never commit raw/derived data; see README "Dataset")
+# ---------------------------------------------------------------------------
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+*.zip
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.nc
+*.nc4
+
+# ---------------------------------------------------------------------------
+# Run outputs (metrics.csv and figures ARE committed; heavy stuff is not)
+# ---------------------------------------------------------------------------
+results/predictions/*
+!results/predictions/.gitkeep
+results/smoke/
+data/synthetic/
+results/demo/
+results/runs/
+checkpoints/
+runs/
+lightning_logs/
+wandb/
+mlruns/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.onnx
+
+# ---------------------------------------------------------------------------
+# Virtual environments (setup scripts create venvMac / venvWin / venvLinux)
+# ---------------------------------------------------------------------------
+venv*/
+.venv*/
+env/
+ENV/
+.python-version
+.conda/
+
+# ---------------------------------------------------------------------------
+# Python byproducts
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs / temp
+*.log
+logs/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+
+# ---------------------------------------------------------------------------
+# OS garbage
+# ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.DocumentRevisions-V100
+Icon?
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.directory
+.Trash-*
+.nfs*
+
+# ---------------------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.history/
+.fleet/
+.zed/
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+kaggle.json
+*.pem
+*.key

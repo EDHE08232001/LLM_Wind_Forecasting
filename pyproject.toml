@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "windfc"
+version = "0.1.0"
+description = "Wind power forecasting: Karaman (2023) replication, baselines and Chronos-2 (zero-shot + LoRA/QLoRA)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Group 17 (ELG5255)" },
+]
+# NOTE: torch is installed by the setup scripts first (so the right CUDA / MPS /
+# CPU wheel is picked); listing it here only guarantees it is present.
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "scikit-learn>=1.3",
+  "xgboost>=2.0",
+  "pyyaml>=6.0",
+  "matplotlib>=3.7",
+  "requests>=2.31",
+  "kagglehub>=0.3",
+  "tqdm>=4.66",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+chronos = [
+  "chronos-forecasting>=2.0",
+  "transformers>=4.41",
+  "accelerate>=0.30",
+  "peft>=0.11",
+]
+# 4-bit quantisation for QLoRA. bitsandbytes needs an NVIDIA GPU (Linux/Windows).
+qlora = [
+  "bitsandbytes>=0.43; platform_system != 'Darwin'",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "slow: downloads a pretrained model or trains for a while (deselect with -m 'not slow')",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+extend-exclude = ["venv*", ".venv*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008", "B905"]

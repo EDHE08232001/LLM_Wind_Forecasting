@@ -1,0 +1,25 @@
+# Plain-pip alternative to `pip install -e ".[chronos,dev]"`.
+# Install torch FIRST with the right wheel for your machine (the setup_env.* scripts do this):
+#   macOS (MPS):     pip install torch
+#   NVIDIA (CUDA):   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   CPU only:        pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14
+scikit-learn>=1.3
+xgboost>=2.0
+pyyaml>=6.0
+matplotlib>=3.7
+requests>=2.31
+kagglehub>=0.3
+tqdm>=4.66
+torch>=2.2
+# Chronos-2 + LoRA fine-tuning
+chronos-forecasting>=2.0
+transformers>=4.41
+accelerate>=0.30
+peft>=0.11
+# dev
+pytest>=8.0
+ruff>=0.5
+# QLoRA (NVIDIA only, optional):  pip install bitsandbytes
