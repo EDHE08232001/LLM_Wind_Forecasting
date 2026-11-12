@@ -1,4 +1,4 @@
-"""Phase 6: tables (CSV / Markdown / LaTeX) and figures from results/metrics.csv + predictions/."""
+"""Build the tables and figures (including the comparison with the paper's Table 5) from results/."""
 
 from _common import base_arg_parser, load_config
 

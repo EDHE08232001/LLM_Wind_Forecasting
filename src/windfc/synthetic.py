@@ -1,7 +1,6 @@
 """Synthetic SCADA + weather files with the same formats as the real downloads.
 
-Used by the tests, the smoke config and ``scripts/demo.py --synthetic`` so the
-whole pipeline can be exercised without downloading anything. The numbers are
+Used by the tests and the smoke config so the whole pipeline can be exercised without downloading anything. The numbers are
 physically plausible but NOT real data; never report results from them.
 """
 

@@ -1,4 +1,4 @@
-"""Phase 1: load, impute (kNN), resample, merge and flag -> data/processed/hourly_clean.parquet."""
+"""Load, impute (kNN), resample to hourly, merge and flag -> data/processed/hourly_clean.parquet."""
 
 from _common import base_arg_parser, load_config
 

@@ -1,384 +1,386 @@
-# Wind Power Forecasting with Machine Learning (ELG5255, Group 17)
+# Wind Power Forecasting with Chronos-2 + LoRA / QLoRA (ELG5255, Group 17)
 
-This repo replicates and extends **Karaman (2023), *Prediction of Wind Power with Machine Learning
-Models*, Applied Sciences 13, 11455** on the Esenköy (Nordex N117/3600) SCADA + MERRA-2 data:
+This project fine-tunes **Chronos-2** ([`amazon/chronos-2`](https://huggingface.co/amazon/chronos-2), a
+120M-parameter pretrained time-series transformer) with **LoRA** or **QLoRA** to predict the active power
+of a wind turbine, and compares the result with the paper that inspired it:
 
-| Family | Models | Where |
-|---|---|---|
-| Baselines | persistence, 24 h seasonal naive, linear regression, XGBoost | `src/windfc/models/baselines.py` |
-| Paper networks (PyTorch) | ANN, CNN, RNN, LSTM, with the paper's layer sizes | `src/windfc/models/paper_nets.py` |
-| Foundation model | **Chronos-2** (`amazon/chronos-2`): zero-shot (univariate / past covariates / known-future covariates) and fine-tuned with **LoRA** or **QLoRA** | `src/windfc/models/chronos.py` |
+> Karaman, Ö.A. *Prediction of Wind Power with Machine Learning Models.* Appl. Sci. 2023, 13, 11455.
+> https://doi.org/10.3390/app132011455
 
-Everything runs on **Apple MPS**, **NVIDIA CUDA**, or **CPU**. The device is picked automatically
-(`cuda > mps > cpu`) or set with `--set device=cpu`.
+The paper's ANN, CNN, RNN and LSTM are **not re-implemented**. Their published test results (Table 5) are
+quoted in `src/windfc/paper.py` and placed next to ours in the report.
 
-Everything is plain Python: scripts, a small CLI, and the `src/windfc` package. There are no notebooks.
-Scripts write all tables and figures to disk.
+What the code does, in order:
+
+1. Downloads the same data as the paper: the Esenköy SCADA file (Kaggle) and MERRA-2 weather (NASA POWER).
+2. Prepares it the way the paper did (kNN imputation, hourly samples, cleaning rules).
+3. Scores Chronos-2 **zero-shot** on a chronological split (train Jan–Aug, validation Sep–Oct, test Nov–Dec).
+4. **Fine-tunes** Chronos-2 with LoRA or QLoRA and scores it on the same test months.
+5. Writes tables and figures, including the comparison with the paper and the filled-in slide table.
+
+It runs on Apple Silicon (MPS), NVIDIA GPUs (CUDA) and CPU. The device is picked automatically.
 
 ---
 
 ## 1. Quick start
 
-### macOS (zsh, Apple Silicon) / Linux
+You need **Python 3.10–3.14** and **git**. The setup script creates a virtual environment inside the repo
+and installs everything, including the right PyTorch build for your machine.
+
+### macOS (zsh)
 
 ```bash
-./setup_env.sh --download
+./setup_env.zsh --download
 ```
 
 ```bash
-source venvMac/bin/activate        # Linux: source venvLinux/bin/activate
+./run_pipeline.zsh
 ```
 
-```bash
-python scripts/run_all.py
-```
+If Python is missing: `brew install python@3.13`.
 
-### Windows (PowerShell)
+### Windows 11 (PowerShell)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup_env.ps1 -Download
-.\venvWin\Scripts\Activate.ps1
-python scripts\run_all.py
 ```
 
-### Windows (cmd.exe)
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run_pipeline.ps1
+```
+
+### Windows 11 (cmd.exe)
 
 ```bat
 setup_env.bat --download
-venvWin\Scripts\activate.bat
-python scripts\run_all.py
 ```
 
-### Try it without downloading anything
+```bat
+run_pipeline.bat
+```
+
+If Python is missing on Windows: `winget install Python.Python.3.13`, then open a new terminal.
+
+### Check that everything works first (recommended)
+
+The smoke configuration runs the whole pipeline on generated **fake** data with 20 training steps. It still
+downloads the real Chronos-2 weights (about 0.5 GB, once). Its numbers mean nothing; it only proves the
+setup works.
 
 ```bash
-python scripts/demo.py --synthetic
+./run_pipeline.zsh --config configs/smoke.yaml
 ```
 
-```bash
-python scripts/run_all.py --config configs/smoke.yaml
-```
+On Windows: `.\run_pipeline.ps1 --config configs/smoke.yaml` or `run_pipeline.bat --config configs/smoke.yaml`.
 
-`--synthetic` and the smoke config use **generated fake data** that has the same file formats as the
-real data. They check that the code runs end to end (about 10 minutes on a laptop CPU). Do not report
-these numbers.
+### Where the results land
+
+| Path | Content |
+|---|---|
+| `results/tables/slides_results.md` | the slide's results table with the "attention-based model" row filled in |
+| `results/tables/paper_comparison.md` | the paper's Table 5 next to every Chronos-2 variant, in the paper's units |
+| `results/tables/main_results.md` | all models, both horizons, in kW |
+| `results/tables/finetune_summary.md` | which LoRA / QLoRA run was selected and how much it gained on validation |
+| `results/figures/` | paper comparison, error by wind speed, power curve, a sample week, training curves |
+| `results/metrics.csv` | every score ever logged (the report uses the latest row per model) |
+| `checkpoints/chronos2/<method>/<variant>/` | the trained adapters (a few MB each) |
 
 ---
 
-## 2. Environment setup scripts
+## 2. Setup scripts
 
-| Script | Platform | Virtual env |
+| Script | Platform | Virtual environment |
 |---|---|---|
-| `setup_env.sh` | macOS (zsh/bash) and Linux | `venvMac/` on macOS, `venvLinux/` on Linux |
-| `setup_env.ps1` | Windows PowerShell | `venvWin/` |
-| `setup_env.bat` | Windows cmd.exe | `venvWin/` |
+| `setup_env.zsh` | macOS (zsh) | `venvMac/` |
+| `setup_env.ps1` | Windows 11, PowerShell | `venvWin/` |
+| `setup_env.bat` | Windows 11, cmd.exe | `venvWin/` |
 
-The setup scripts:
+Each script:
 
-1. Find Python 3.10 to 3.14, preferring the newest. 3.14 is recommended and tested. On macOS, install it with
-   `brew install python@3.14`; on Windows, with `winget install Python.Python.3.14`.
-2. Create the venv. Pass `--recreate` / `-Recreate` to rebuild it.
-3. Install the right **PyTorch** build:
-   * macOS: the standard wheel, which includes the **MPS** backend on Apple Silicon.
-   * NVIDIA: the script reads the driver's CUDA version from `nvidia-smi` and picks the matching wheel
-     index (`cu134`, `cu132`, `cu130`, `cu129`, `cu128`, `cu126` or `cu118`). The wheels bundle the CUDA
-     runtime, so you only need an NVIDIA driver, not the standalone CUDA toolkit. RTX 50-series (Blackwell) GPUs need
-     `cu128` or newer, so update the driver if the script picks an older index. To force an index, pass
-     `--cuda cu134` / `-Cuda cu134` or set the `TORCH_CUDA` environment variable. The manual
-     equivalent on Windows is
-     `pip install torch --index-url https://download.pytorch.org/whl/cu134`.
-   * No GPU, or `--cpu` / `-Cpu`: the CPU wheel.
-4. Run `pip install -e ".[chronos,dev]"`. Pass `--no-chronos` to skip Chronos-2. Pass `--qlora` to also
-   install `bitsandbytes`, which QLoRA needs (NVIDIA only).
-5. Run `scripts/check_env.py`, which prints library versions and does a forward and backward pass on
-   the selected device.
-6. If you passed `--download` / `-Download`, download the dataset (section 3).
+1. Finds Python 3.10–3.14, newest first.
+2. Creates the virtual environment.
+3. Installs **PyTorch** for the machine:
+   * macOS: the standard wheel, which uses the **MPS** backend on Apple Silicon.
+   * Windows with an NVIDIA GPU: reads the driver's CUDA version from `nvidia-smi` and picks the matching
+     wheel index (`cu134`, `cu132`, `cu130`, `cu129`, `cu128`, `cu126` or `cu118`). The wheels include the
+     CUDA runtime, so only the NVIDIA driver is needed. RTX 50-series cards need `cu128` or newer.
+   * No NVIDIA GPU: the CPU wheel.
+4. Installs the project and its dependencies (`chronos-forecasting`, `transformers`, `peft`, ...).
+5. On NVIDIA machines, installs **bitsandbytes**, which QLoRA needs. If that fails, setup continues and
+   QLoRA falls back to LoRA.
+6. Runs `scripts/check_env.py`, which prints the library versions, the selected device and whether QLoRA
+   is available.
 
-Manual alternative: install torch for your platform first (see `requirements.txt`), then run
-`pip install -e ".[chronos,dev]"`.
+Options:
+
+| zsh / cmd | PowerShell | Effect |
+|---|---|---|
+| `--download` | `-Download` | also download the dataset |
+| `--recreate` | `-Recreate` | delete the virtual environment and rebuild it |
+| `--cpu` | `-Cpu` | force the CPU-only PyTorch wheel (not needed on macOS) |
+| `--cuda cu134` | `-Cuda cu134` | force a CUDA wheel index (Windows / Linux) |
+| `--python python3.13` | `-Python "py -3.13"` | use a specific interpreter (zsh and PowerShell only) |
+
+Linux is not a target platform, but `bash setup_env.zsh` works there and creates `venvLinux/`.
+
+Manual setup, if you prefer: create and activate a virtual environment, install PyTorch for your platform
+from [pytorch.org](https://pytorch.org/get-started/locally/), then run `pip install -e ".[dev]"` (add
+`,qlora` inside the brackets on an NVIDIA machine).
 
 ---
 
 ## 3. Dataset
 
-The `data/` folder is git-ignored. You need two raw files in `data/raw/`:
+`data/` is git-ignored. Two raw files are needed in `data/raw/`:
 
 | File | Content | Source |
 |---|---|---|
-| `T1.csv` | 10-min SCADA for 2018: active power, wind speed, theoretical power, wind direction (50,530 rows) | Kaggle [`berkerisen/wind-turbine-scada-dataset`](https://www.kaggle.com/datasets/berkerisen/wind-turbine-scada-dataset) |
-| `weather_merra2_2018.csv` | Hourly MERRA-2 weather at 40.58545 N, 28.99035 E: temperature, precipitation, air density, ground and top-of-atmosphere irradiance, cloud cover | [NASA POWER](https://power.larc.nasa.gov) hourly API (MERRA-2 based, no key needed) |
+| `T1.csv` | 10-minute SCADA for 2018: active power, wind speed, theoretical power, wind direction (50,530 rows) | Kaggle [`berkerisen/wind-turbine-scada-dataset`](https://www.kaggle.com/datasets/berkerisen/wind-turbine-scada-dataset) |
+| `weather_merra2_2018.csv` | hourly MERRA-2 weather at 40.58545 N, 28.99035 E: temperature, precipitation, air density, ground and top-of-atmosphere irradiance, cloud cover | [NASA POWER](https://power.larc.nasa.gov) hourly API (no key needed) |
 
 ### Automatic download
+
+`--download` in the setup script does this, and so does the first stage of `run_pipeline`. To run it alone
+(with the virtual environment active):
 
 ```bash
 python scripts/00_download_data.py
 ```
 
-* The SCADA file comes from Kaggle's official `kagglehub` client. Public datasets need no login.
-* The weather file comes from the NASA POWER API. Air density is computed from surface pressure,
-  temperature and specific humidity. Cloud amount is converted from % to a 0-1 fraction, the same
-  units as MERRA-2 `cldtot`.
+The SCADA file comes through Kaggle's `kagglehub` client, which needs no login for public datasets.
 
-### Manual download (if the automatic one fails)
+### Manual download, if the automatic one fails
 
-1. **SCADA:** open the Kaggle page above, click **Download**, unzip it, and copy `T1.csv` to
-   `data/raw/T1.csv`. Kaggle may ask you to sign in. You can also run the `curl` command shown under
-   *Download → cURL* on the Kaggle page.
-2. **Weather**, either option:
-   * Open this URL in a browser and save the result as `data/raw/weather_merra2_2018.csv`:
-     `https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=T2M,PRECTOTCORR,PS,QV2M,ALLSKY_SFC_SW_DWN,TOA_SW_DWN,CLOUD_AMT,WS50M,WD50M&community=RE&latitude=40.58545&longitude=28.99035&start=20180101&end=20181231&format=CSV&time-standard=UTC`
-   * Or use [renewables.ninja](https://www.renewables.ninja), the source the paper used. Sign in, go to
-     *Weather*, set the point (40.58545, 28.99035), the year 2018, dataset MERRA-2, and the variables
-     t2m, prectotland, rhoa, swgdn, swtdn and cldtot. Download the CSV and save it as
-     `data/raw/weather_merra2_2018.csv`. The loader detects this format automatically. The anonymous
-     ninja API no longer serves 2018, so you have to export from the website.
+1. **SCADA:** open the Kaggle page above, click **Download**, unzip, and copy `T1.csv` to `data/raw/T1.csv`.
+2. **Weather:** open this URL in a browser and save the result as `data/raw/weather_merra2_2018.csv`:
 
-### Data pipeline (`scripts/01_prepare_data.py`)
+   ```
+   https://power.larc.nasa.gov/api/temporal/hourly/point?parameters=T2M,PRECTOTCORR,PS,QV2M,ALLSKY_SFC_SW_DWN,TOA_SW_DWN,CLOUD_AMT,WS50M,WD50M&community=RE&latitude=40.58545&longitude=28.99035&start=20180101&end=20181231&format=CSV&time-standard=UTC
+   ```
 
-Output: `data/processed/hourly_clean.parquet` plus `prepare_report.json`.
+   A [renewables.ninja](https://www.renewables.ninja) weather export (the paper's source) for the same
+   point and year also works; the loader recognises both formats.
 
-1. Reindex the SCADA data onto a full 10-min grid. 2,030 rows are missing, the same number the paper
-   reports.
-2. **kNN imputation** with k = 5, as in the paper. Missing rows have no SCADA values, so neighbours are
-   found by weather and time-of-day similarity. The MERRA-2 50 m wind is included, which makes the
-   matching informative. The imputer is fitted on **the training months only**, so the test period
-   cannot leak into it. Theoretical power for imputed rows is re-derived from the power curve.
-3. Keep the on-the-hour sample (`data.resample: first`). The paper "filtered only the hourly data".
-   Set `mean` to use hourly averages instead. The result has 8,760 rows.
-4. Merge with weather on the UTC timestamp. The SCADA timezone is not documented; set
-   `site.scada_utc_offset_hours` to shift it.
-5. **Cleaning flags**, applied in the paper's order:
-   * wind speed below 3.5 or above 25.5 m/s
-   * active power ≤ 0 while the wind is in range
-   * IQR outliers (outside Q1 − 1.5·IQR to Q3 + 1.5·IQR)
+Then run the pipeline with `--skip download`.
 
-   Rows are **flagged, not dropped**, so the forecasting series stays regular. Protocol A drops flagged
-   rows like the paper does. Protocol B scores all targets and also reports a `clean` subset.
+### How the data is prepared (`scripts/01_prepare_data.py`)
 
-   On the real hourly data the IQR rule removes 0 rows. The paper reports 68, which probably came from
-   applying the rule to a different stage of the data. `prepare_report.json` logs every count.
+Output: `data/processed/hourly_clean.parquet` and `prepare_report.json` (row counts for every step).
+
+1. The SCADA data is put on a full 10-minute grid. 2,030 rows are missing, the number the paper reports.
+2. Missing rows are filled by **kNN imputation with k = 5**, as in the paper. Neighbours are found by
+   weather and time of day, and only among the training months, so the test months cannot leak in.
+3. The on-the-hour sample of each hour is kept, giving 8,760 rows (`data.resample: mean` averages instead).
+4. Weather is merged on the timestamp.
+5. The paper's **cleaning rules** are applied as flags: wind speed outside 3.5–25.5 m/s, zero or negative
+   power while the wind is in range, and IQR outliers. Rows are flagged, not deleted, because Chronos-2
+   needs an unbroken hourly series. Every score is reported twice: on `all` hours and on the `clean`
+   hours the paper would have kept.
 
 ---
 
-## 4. Experimental protocols
+## 4. What is evaluated, and how it compares with the paper
 
-| | Protocol A (paper) | Protocol B (ours) |
+### Split
+
+Chronological: **train Jan–Aug, validation Sep–Oct, test Nov–Dec 2018**. The paper used a random 75/25
+split, where test hours sit between training hours. Ours is harder and matches how a model would be used.
+
+### Three ways of feeding Chronos-2
+
+| Variant | What Chronos-2 sees | Kind of task |
 |---|---|---|
-| Task | same-hour regression ("nowcast") | direct forecasting at **h = 1 h** (headline) and **h = 24 h** |
-| Split | random 75/25, seed 42, cleaned rows only | chronological: train Jan–Aug, validation Sep–Oct, test Nov–Dec |
-| Inputs | same-hour wind speed, direction, theoretical power and weather | only values known at the origin `T − h` (lags, rolling statistics, weather at the origin, calendar features of the target) |
-| Nets | 100 epochs, batch 32, Adam 1e-3, MSE (paper) | same settings, early stopping on validation, 5 seeds (mean ± std) |
-| Scaling | min-max fitted on the training rows | min-max fitted on the training months |
+| `univariate` | past active power | forecast |
+| `past_covariates` | past power, wind speed and direction, theoretical power, weather | forecast |
+| `paper_inputs` | all of the above **plus wind speed, direction, theoretical power and weather at the target hours** | estimation, like the paper |
 
-The protocol A numbers are much higher. The model sees the same-hour wind speed and theoretical power
-(the power curve), so it never has to forecast anything. Protocol B is the real forecasting task.
+The paper's networks estimate the power of an hour from **that same hour's** wind speed, theoretical power
+and weather. `paper_inputs` gives Chronos-2 the same information (as "known future covariates"), so it is
+the variant to put next to the paper's Table 5. The other two are real forecasts, where nothing about the
+target hour is known, and they answer a harder question than the paper asked.
 
-**Paired evaluation.** In protocol B every model, Chronos-2 included, is scored on exactly the same test
-targets (every hour of Nov–Dec). The forecast origin for each target is `T − h`. Inputs may come from
-earlier months: that is only the past, so it is not a leak.
+Each variant is scored 1 hour and 24 hours ahead with a rolling origin: for every test hour `T`, the model
+is given the history up to `T − h` and its `h`-th predicted step is compared with the truth.
 
-**Metrics** (`src/windfc/metrics.py`):
+### Two references that need no training
 
-* MAE, MSE, RMSE and R² in **kW**
-* The same metrics on the **min-max scale**, comparable with paper Table 5. The paper's MAE of 0.0209
-  is about 75 kW.
-* Persistence-relative skill: `1 − RMSE / RMSE_persistence`
-* Errors by wind-speed bin (`[0,5,10,13,26]` m/s, with a focus on speeds above 13 m/s)
-* A paired moving-block bootstrap CI of the RMSE difference against persistence
+* `persistence`: the power at the forecast origin.
+* `power_curve`: the manufacturer's theoretical power at the target hour's wind speed. It uses the paper's
+  information with no learning at all, so it shows how much of a high R² comes from the inputs alone.
 
----
+### Metrics
 
-## 5. Running the pipeline
+MAE, MSE, RMSE and R² in **kW**, and the same errors on the paper's **min-max scale** (kW error divided by
+the training range of active power, about 3,600 kW). The paper's best MAE of 0.0209 is roughly 75 kW.
+Also reported: skill against persistence, the coverage of the 10–90 % prediction interval, errors by
+wind-speed bin (the paper found its models weakest above 13 m/s), and block-bootstrap confidence intervals
+for fine-tuned vs zero-shot.
 
-Every script takes `--config <yaml>` and any number of `--set key.sub=value` overrides.
+`r2` is the usual 1 − SS_res/SS_tot. `r2_pearson` is the squared correlation, which is how the paper's
+Eq. (2) defines R². It ignores bias, so it is never lower.
 
-```bash
-python scripts/00_download_data.py                       # data/raw/
-python scripts/01_prepare_data.py                        # data/processed/hourly_clean.parquet
-python scripts/02_run_baselines.py                       # persistence / seasonal naive / linear / XGBoost
-python scripts/03_replicate_paper.py                     # ANN / CNN / RNN / LSTM, protocols A and B
-python scripts/04_run_chronos.py                         # Chronos-2 zero-shot (3 variants)
-python scripts/05_finetune_chronos.py                    # Chronos-2 LoRA fine-tuning (grid on Sep-Oct)
-python scripts/06_make_report.py                         # tables + figures
-```
+### Reading the comparison fairly
 
-```bash
-python scripts/run_all.py                                # all of the above
-python scripts/run_all.py --skip chronos finetune        # without Chronos-2
-python scripts/run_all.py --only baselines report
-```
+The slide table uses `paper_inputs`, 1 hour ahead, `clean` hours (`report.headline` in the config). Three
+differences from the paper remain and should be stated with the result:
 
-You can also use `make all`, `make baselines`, `make paper`, `make chronos`, `make finetune`,
-`make report`, `make smoke` and `make test`. On Windows without `make`, use `run_pipeline.ps1` or
-`run_pipeline.bat`: they activate `venvWin` and forward arguments to `run_all.py`. `run_pipeline.sh`
-does the same on macOS and Linux.
-
-Useful options:
-
-```bash
-python scripts/03_replicate_paper.py --protocols A --models lstm            # paper LSTM only
-python scripts/03_replicate_paper.py --protocols B --seeds 0 1 2            # fewer seeds
-python scripts/04_run_chronos.py --variants univariate past_covariates
-python scripts/05_finetune_chronos.py --no-grid --set finetune.num_steps=300
-python scripts/run_all.py --set device=cpu --set train.epochs=20
-```
-
-### Chronos-2 fine-tuning: LoRA / QLoRA
-
-`scripts/05_finetune_chronos.py` uses its own training loop, so the same code runs on CUDA, MPS and CPU.
-
-* **LoRA** is the default: `--method lora`. Adapters (rank 8, alpha 16) are attached to the time and
-  group attention projections (q, k, v, o) and the output patch head. That is about 1.2 M trainable
-  parameters out of 120 M.
-* **QLoRA**: `--method qlora`. The frozen base weights are loaded in 4-bit NF4 with bitsandbytes and
-  LoRA is trained on top. This needs an **NVIDIA GPU** and `pip install bitsandbytes` (or
-  `./setup_env.sh --qlora`). On MPS or CPU the script falls back to LoRA and says so.
-* **Full fine-tuning**: `--method full`.
-
-The grid covers context length (168, 336, 512 h) × learning rate (1e-4, 5e-4). Each run is scored
-every `eval_every` steps by rolling-origin RMSE in kW on the Sep–Oct validation period, and the best
-step is restored. Step 0, the zero-shot model, is included in that comparison: if fine-tuning does not
-help, you get the zero-shot weights back and the log says so. The best adapter is then evaluated on
-Nov–Dec at every horizon.
-
-Adapters are saved to `checkpoints/chronos2/<method>/ctx<C>_lr<LR>/`. Reload one in the demo with
-`--chronos-adapter auto`.
-
-The `future_covariates` variant feeds the observed weather of the forecast window as if it were a
-forecast. This is **optimistic**, a stand-in for NWP. The variant is flagged in `metrics.csv` (the
-`notes` column) and should be reported as an upper bound.
-
-### Demo / inference
-
-```bash
-python scripts/demo.py                                   # persistence + XGBoost + LSTM (checkpoint or quick train)
-python scripts/demo.py --horizon 24 --chronos            # + Chronos-2 zero-shot
-python scripts/demo.py --chronos-adapter auto            # + best fine-tuned adapter
-```
-
-The demo writes `results/demo/demo_week_h<H>.png` and a CSV of predictions. It does not change
-`metrics.csv`.
+* The split is chronological, not random.
+* Chronos-2 also sees the recent power history, which the paper's networks did not. The 24-hour rows in
+  `paper_comparison.md` reduce that advantage, since day-old power says little about the current hour.
+* One turbine, one year, two test months: check `tables/bootstrap.csv` before claiming a difference.
 
 ---
 
-## 6. Outputs
+## 5. Running the pieces yourself
 
-| Path | Content | In git? |
-|---|---|---|
-| `results/metrics.csv` | one row per model × protocol × horizon × split × subset × seed, with git commit and config name | yes |
-| `results/tables/` | `main_results.{csv,md,tex}`, `protocol_a_vs_b`, `paper_comparison`, `binned_errors`, `bootstrap_vs_persistence`, `finetune_grid_*`, `slides_results.md` | yes |
-| `results/figures/` | error by wind bin, power curve (paper Fig. 9 style), sample-week forecasts, skill vs persistence | yes |
-| `results/predictions/` | parquet per run (predictions, 10–90 % intervals for Chronos-2) | no |
-| `checkpoints/` | paper nets (`.pt`), Chronos-2 adapters | no |
+Activate the environment first: `source venvMac/bin/activate` (macOS), `.\venvWin\Scripts\Activate.ps1`
+(PowerShell) or `venvWin\Scripts\activate.bat` (cmd). On Windows, write the paths with backslashes.
 
-The report keeps the latest row per (model, protocol, horizon, split, subset, seed) and averages over
-seeds. Fill the slide's TBD cells from `results/tables/slides_results.md`.
+```bash
+python scripts/00_download_data.py      # data/raw/
+python scripts/01_prepare_data.py       # data/processed/hourly_clean.parquet
+python scripts/02_zero_shot.py          # references + Chronos-2 zero-shot
+python scripts/03_finetune.py           # LoRA fine-tuning + test scores
+python scripts/04_make_report.py        # tables and figures
+```
+
+`python scripts/run_all.py` runs all five. `run_pipeline.*` is the same thing without needing to activate
+the environment; both take the same arguments:
+
+```bash
+python scripts/run_all.py --skip download            # data already in data/raw
+python scripts/run_all.py --only finetune report     # just these stages
+python scripts/run_all.py --method qlora             # QLoRA instead of LoRA
+python scripts/run_all.py --no-grid                  # one training run per variant (much faster)
+```
+
+Every script takes `--config <yaml>` and any number of `--set key.sub=value` overrides, for example
+`--set device=cpu` or `--set finetune.num_steps=300`. All settings live in `configs/default.yaml`.
+
+### Fine-tuning options
+
+```bash
+python scripts/03_finetune.py                              # LoRA, full grid, both variants
+python scripts/03_finetune.py --method qlora               # QLoRA
+python scripts/03_finetune.py --variants paper_inputs      # only the variant compared with the paper
+python scripts/03_finetune.py --no-grid --set finetune.num_steps=300
+python scripts/03_finetune.py --eval-only                  # re-score the saved adapters, no training
+```
+
+How it works (`src/windfc/chronos.py`):
+
+* **LoRA**: the 120M base weights are frozen. Rank-8 adapters (alpha 16, dropout 0.05) are added to the
+  attention projections (`q`, `k`, `v`, `o` of the time and group attention) and to the output head, the
+  same modules the Chronos-2 library uses for LoRA. Only the adapters are trained and saved.
+* **QLoRA**: the same adapters, but the frozen base weights are loaded in **4-bit NF4** with bitsandbytes.
+  This needs an **NVIDIA GPU**; bitsandbytes has no MPS or CPU kernels. On a Mac, `--method qlora` prints
+  why and runs LoRA instead, and the results are labelled `lora`.
+* **Grid**: context length (168 and 512 hours) × learning rate (1e-5 and 1e-4), 1,000 steps each, for
+  each of the two variants in `finetune.variants`. That is 8 training runs by default.
+* **Model selection**: every 100 steps the model is scored by rolling-origin RMSE in kW on the validation
+  months, and the best step is kept. Step 0, the untouched zero-shot model, is part of that comparison,
+  so fine-tuning cannot make the selected model worse on validation. If it did not help, the log says so.
+* The best run per variant is then scored on Nov–Dec at both horizons.
+
+Runtime depends heavily on hardware and has not been measured on your machines. An NVIDIA GPU will be
+much faster than an Apple Silicon laptop; on the Mac, start with `--no-grid` or
+`--variants paper_inputs`, and lower `finetune.num_steps` if needed.
 
 ---
 
-## 7. Cleanup
+## 6. Cleanup
 
 | Script | Platform |
 |---|---|
-| `cleanup.sh` | macOS / Linux |
-| `cleanup.ps1` | Windows PowerShell |
-| `cleanup.bat` | Windows cmd.exe |
+| `cleanup.zsh` | macOS |
+| `cleanup.ps1` | Windows 11, PowerShell |
+| `cleanup.bat` | Windows 11, cmd.exe |
 
-By default the cleanup scripts only remove safe things:
+With no options the scripts remove only what is safe to lose:
 
-* `__pycache__`, `.pytest_cache`, `.ruff_cache` and `*.egg-info`
-* `.DS_Store`, `._*` and `Thumbs.db`
-* the **matplotlib cache** (`~/.matplotlib`, `~/.cache/matplotlib`, `%USERPROFILE%\.matplotlib`)
-* smoke and demo outputs, and the synthetic data
+* `__pycache__`, `.pytest_cache`, `.ruff_cache`, `*.egg-info`, `build/`
+* `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`
+* the matplotlib cache
+* smoke-test outputs and the synthetic data
 
-They then **free GPU memory**. They empty the CUDA / MPS allocator cache and list leftover project
-Python processes that still hold the GPU. GPU memory belongs to a process and is only returned when the
-process exits, so to actually free it, run the script with `--gpu-kill` / `-GpuKill` to terminate those
-processes (it asks first).
+They then release GPU memory held by the cleanup process itself and list any project Python processes
+that are still running. GPU memory belongs to a process and comes back only when that process ends, so a
+crashed or forgotten run is what actually keeps it busy; `--gpu-kill` stops those (it asks first).
 
-Optional flags:
+Options (PowerShell uses `-Results`, `-Checkpoints`, `-Data`, `-RawData`, `-HfCache`, `-PipCache`, `-Venv`,
+`-GpuKill`, `-All`, `-DryRun`):
 
-| Flag | Also deletes |
+| Option | Also removes |
 |---|---|
-| `--outputs` | predictions, figures and tables (`metrics.csv` is kept) |
-| `--checkpoints` | trained nets and adapters |
-| `--data` | derived data (raw downloads are kept) |
-| `--hf-cache` | the cached Chronos-2 weights |
-| `--pip-cache` | pip's cache |
+| `--results` | `results/`: metrics.csv, tables, figures, predictions |
+| `--checkpoints` | `checkpoints/`: the trained LoRA / QLoRA adapters |
+| `--data` | `data/processed` (rebuilt by `01_prepare_data.py`) |
+| `--raw-data` | `data/raw` and the kagglehub download cache |
+| `--hf-cache` | the cached Chronos-2 weights (about 0.5 GB, downloaded again on next use) |
+| `--pip-cache` | pip's download cache |
 | `--venv` | the virtual environment |
-| `--all` | everything above except `--venv` |
+| `--gpu-kill` | leftover project Python processes |
+| `--all` | everything above except `--venv` and `--gpu-kill` |
+| `--dry-run` | nothing: only lists what would be removed |
 
-`--dry-run` shows what would be removed without deleting anything. `python scripts/gpu_cleanup.py` can
-also be run on its own.
-
-The pipeline also frees accelerator memory between models and stages: `windfc.device.free_device_memory`
-calls `torch.cuda.empty_cache()` and `torch.mps.empty_cache()`.
-
----
-
-## 8. Tests
+Examples:
 
 ```bash
-pytest -m "not slow"          # fast suite on synthetic data (~1 min, CPU)
+./cleanup.zsh --dry-run --all
 ```
 
 ```bash
-pytest -m slow                # Chronos-2 zero-shot + LoRA step (downloads the model once)
+./cleanup.zsh --results --checkpoints
+```
+
+To remove every trace of the project from the machine: `--all --venv`, then delete the folder.
+
+---
+
+## 7. Tests
+
+With the environment active:
+
+```bash
+pytest -m "not slow"
+```
+
+```bash
+pytest -m slow
 ```
 
 ```bash
 ruff check .
 ```
 
-The tests cover:
-
-* the cleaning rules
-* the raw-format loaders (NASA POWER and renewables.ninja)
-* split boundaries and leakage (scalers fitted on train, windows ending at the origin, persistence alignment)
-* hand-computed metrics
-* **parameter counts against the paper's tables**
-* end to end through the harness and report
-* Chronos-2 input construction (no future target leaks)
-
-CI runs the fast suite (`.github/workflows/ci.yml`).
-
-### Parameter counts
-
-These match the paper's Keras models when there are 10 inputs:
-
-| Net | Paper (Keras) | Here (PyTorch) | Note |
-|---|---|---|---|
-| ANN | 2,817 | 2,817 | exact |
-| CNN | 10,497 | 10,497 | exact |
-| RNN | 5,313 | 5,345 | PyTorch adds a second bias vector `b_hh` (+32) |
-| LSTM | 31,233 | 31,489 | PyTorch adds `b_hh` (+4·64) |
-
-The paper's tables imply 10 input features, but its text lists 9. The config uses the 9 documented
-ones (`features.paper_inputs`); add a column there to try a 10th.
+The fast suite needs no downloads. It uses synthetic data and a tiny, randomly initialised model with the
+real Chronos-2 architecture, and covers the data cleaning rules, the split, the metrics, that the target is
+never leaked into the model inputs, that LoRA trains only the adapter, saving and reloading adapters, the
+QLoRA fallback, and the whole pipeline through to the report. The slow test downloads the real Chronos-2
+and runs zero-shot plus two LoRA steps. CI runs the fast suite.
 
 ---
 
-## 9. Repository layout
+## 8. Repository layout
 
 ```
-configs/            default.yaml (full experiment), smoke.yaml (synthetic, fast)
-src/windfc/         config, device, download, data, synthetic, features, splits, metrics,
-                    evaluate (harness), train, pipeline (stages), report
-  models/           baselines.py, paper_nets.py, chronos.py
-scripts/            00..06 pipeline steps, run_all.py, demo.py, check_env.py, gpu_cleanup.py
-tests/              pytest suite
-results/            metrics.csv, tables/, figures/ (predictions/ ignored)
-setup_env.*, cleanup.*, run_pipeline.*   platform scripts
+configs/         default.yaml (the experiment), smoke.yaml (fast check on fake data)
+scripts/         00..04 pipeline steps, run_all.py, check_env.py, gpu_cleanup.py
+src/windfc/      chronos.py   Chronos-2 inputs, rolling forecasts, LoRA / QLoRA fine-tuning
+                 pipeline.py  the stages          report.py   tables and figures
+                 data.py      loading, imputation, cleaning    download.py, synthetic.py
+                 splits.py    chronological split and targets  metrics.py, evaluate.py
+                 paper.py     the paper's Table 5
+tests/           pytest suite
+results/         metrics.csv, tables/, figures/ (predictions/ is git-ignored)
+setup_env.*  run_pipeline.*  cleanup.*      one of each for zsh, PowerShell and cmd
 ```
 
-## 10. Notes and caveats
+## 9. Notes
 
-* There is one turbine, one year, and two test months, so look at the bootstrap CIs before claiming a
-  difference.
-* Chronos-2 is about 120 M parameters. 4-bit quantisation is not needed for memory; QLoRA is offered
-  for the project's Q-LoRA experiment, so word the slides according to what you actually run.
-* The Chronos-2 API is recent. This code was written against `chronos-forecasting` 2.3. If a future
-  release breaks it, pin `chronos-forecasting==2.3.*`.
-
-Reference: Karaman, Ö.A. *Prediction of Wind Power with Machine Learning Models.* Appl. Sci. 2023, 13,
-11455. https://doi.org/10.3390/app132011455
+* Chronos-2 fits in memory without quantisation (120M parameters), so QLoRA here is about studying the
+  technique, not about making the model fit. Word the slides according to what you ran: if the run was on
+  a Mac, it was LoRA.
+* The code is written against `chronos-forecasting` 2.3. If a later release breaks it, pin
+  `chronos-forecasting==2.3.*` in `pyproject.toml`.
+* Chronos-2 handles horizons up to 1,024 steps and contexts up to 8,192, far beyond what is used here.

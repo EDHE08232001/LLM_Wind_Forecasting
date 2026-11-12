@@ -1,18 +1,20 @@
-"""Tables and figures generated from results/metrics.csv and results/predictions/.
+"""Tables and figures built from ``results/metrics.csv`` and ``results/predictions/``.
 
-Outputs (under ``results/``):
+Outputs under ``results/``:
 
-* ``tables/main_results.{csv,md,tex}``    - every model x protocol x horizon (test split)
-* ``tables/protocol_a_vs_b.{csv,md}``     - how much the random split flatters the paper nets
-* ``tables/paper_comparison.md``          - our protocol-A numbers next to paper Table 5
-* ``tables/bootstrap_vs_persistence.csv`` - paired block-bootstrap CI on RMSE difference
-* ``tables/binned_errors.csv``            - error by wind-speed bin (focus > 13 m/s)
-* ``tables/slides_results.md``            - the slide table, filled from metrics.csv
-* ``figures/*.png``                       - error-by-wind-bin, power curve, sample week, skill
+* ``tables/main_results.{csv,md}``      - every model x horizon x subset on the test months, in kW
+* ``tables/paper_comparison.{csv,md}``  - the paper's Table 5 next to our models, in the paper's units
+* ``tables/slides_results.md``          - the slide table with its TBD row filled in
+* ``tables/finetune_summary.{csv,md}``  - what the LoRA / QLoRA runs selected
+* ``tables/bootstrap.csv``              - paired block-bootstrap CIs (fine-tuned vs zero-shot, vs persistence)
+* ``tables/binned_errors.csv``          - error by wind-speed bin (the paper's weak spot: above 13 m/s)
+* ``figures/*.png``                     - paper comparison, error by wind bin, power curve, sample week,
+                                          fine-tuning curves
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -20,30 +22,39 @@ import pandas as pd
 
 from .config import Config
 from .metrics import binned_errors, bootstrap_rmse_diff
+from .paper import PAPER_BEST, PAPER_CITATION, PAPER_TABLE5
 from .utils import banner, results_dir
 
-PAPER_TABLE5 = pd.DataFrame(
-    {
-        "model": ["ann", "cnn", "rnn", "lstm"],
-        "paper_mae": [0.0245, 0.0235, 0.0218, 0.0209],
-        "paper_mse": [0.0062, 0.0055, 0.0043, 0.0038],
-        "paper_rmse": [0.0787, 0.0742, 0.0656, 0.0614],
-        "paper_r2": [0.9301, 0.9378, 0.9514, 0.9574],
-    }
-)
-
-# Validated categorical palette (dataviz reference instance, light mode), assigned by
-# a fixed per-model map so a model keeps its colour in every figure.
-PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
+# One fixed colour per model group, so a group looks the same in every figure.
+GROUP_COLORS = {"paper": "#1baf7a", "reference": "#8a8984", "zeroshot": "#2a78d6", "finetuned": "#eb6834"}
+GROUP_LABELS = {"paper": "Paper (Karaman 2023)", "reference": "Reference, no training",
+                "zeroshot": "Chronos-2 zero-shot", "finetuned": "Chronos-2 fine-tuned"}
 TEXT, TEXT2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
-ACTUAL_COLOR = "#0b0b0b"
+VARIANT_LABELS = {"univariate": "power history only", "past_covariates": "past covariates",
+                  "paper_inputs": "paper inputs"}
+KEY_COLS = ["model", "horizon", "split", "subset"]
 
-KEY_COLS = ["model", "protocol", "horizon", "split", "subset", "seed"]
-SHOW = ["mae_kw", "rmse_kw", "r2", "mae_scaled", "rmse_scaled", "skill_vs_persistence"]
+
+def model_group(model: str) -> str:
+    if model.startswith("chronos2_zeroshot"):
+        return "zeroshot"
+    if model.startswith("chronos2_"):
+        return "finetuned"
+    return "reference"
+
+
+def model_label(model: str) -> str:
+    if model == "persistence":
+        return "Persistence"
+    if model == "power_curve":
+        return "Theoretical power curve"
+    _, tag, variant = model.split("_", 2)
+    how = {"zeroshot": "zero-shot", "lora": "+ LoRA", "qlora": "+ QLoRA"}.get(tag, tag)
+    return f"Chronos-2 {how} ({VARIANT_LABELS.get(variant, variant)})"
 
 
 # ---------------------------------------------------------------------------
-# Table helpers (no tabulate / jinja2 dependency)
+# Tables
 # ---------------------------------------------------------------------------
 def to_markdown(df: pd.DataFrame, floatfmt: str = ".4f") -> str:
     def fmt(v):
@@ -53,71 +64,84 @@ def to_markdown(df: pd.DataFrame, floatfmt: str = ".4f") -> str:
 
     cols = list(df.columns)
     lines = ["| " + " | ".join(cols) + " |", "|" + "|".join("---" for _ in cols) + "|"]
-    for _, r in df.iterrows():
-        lines.append("| " + " | ".join(fmt(r[c]) for c in cols) + " |")
+    lines += ["| " + " | ".join(fmt(r[c]) for c in cols) + " |" for _, r in df.iterrows()]
     return "\n".join(lines) + "\n"
 
 
-def to_latex(df: pd.DataFrame, floatfmt: str = ".4f", caption: str = "") -> str:
-    def fmt(v):
-        if isinstance(v, float | np.floating):
-            return "--" if np.isnan(v) else format(v, floatfmt)
-        return str(v).replace("_", r"\_").replace("%", r"\%")
-
-    cols = list(df.columns)
-    out = [r"\begin{table}[ht]", r"\centering", r"\begin{tabular}{" + "l" * 3 + "r" * (len(cols) - 3) + "}",
-           r"\hline", " & ".join(c.replace("_", r"\_") for c in cols) + r" \\", r"\hline"]
-    for _, r in df.iterrows():
-        out.append(" & ".join(fmt(r[c]) for c in cols) + r" \\")
-    out += [r"\hline", r"\end{tabular}"]
-    if caption:
-        out.append(r"\caption{" + caption + "}")
-    out.append(r"\end{table}")
-    return "\n".join(out) + "\n"
-
-
-def write_table(df: pd.DataFrame, path_stem: Path, caption: str = "", latex: bool = False) -> None:
+def write_table(df: pd.DataFrame, path_stem: Path, floatfmt: str = ".4f", note: str = "") -> None:
     df.to_csv(path_stem.with_suffix(".csv"), index=False)
-    path_stem.with_suffix(".md").write_text(to_markdown(df))
-    if latex:
-        path_stem.with_suffix(".tex").write_text(to_latex(df, caption=caption))
+    path_stem.with_suffix(".md").write_text(to_markdown(df, floatfmt) + (f"\n{note}\n" if note else ""))
 
 
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
 def load_metrics(res: Path) -> pd.DataFrame:
     path = res / "metrics.csv"
     if not path.exists():
         raise FileNotFoundError(f"{path} not found - run the experiment scripts first.")
     m = pd.read_csv(path)
-    m["seed"] = m["seed"].fillna(-1).astype(int)
-    m = m.sort_values("timestamp").drop_duplicates(KEY_COLS, keep="last")  # latest run wins
-    return m
-
-
-def aggregate_seeds(m: pd.DataFrame) -> pd.DataFrame:
-    group = ["model", "family", "protocol", "horizon", "split", "subset"]
-    agg = m.groupby(group, dropna=False)[SHOW + ["n"]].agg(["mean", "std"])
-    agg.columns = [f"{a}_{b}" for a, b in agg.columns]
-    agg = agg.reset_index()
-    agg["n_seeds"] = m.groupby(group, dropna=False)["seed"].nunique().to_numpy()
-    return agg
+    return m.sort_values("timestamp").drop_duplicates(KEY_COLS, keep="last")  # the latest run wins
 
 
 def load_predictions(res: Path, task_name: str, split: str = "test") -> dict[str, pd.DataFrame]:
-    """One prediction frame per model (seed-averaged when several seeds exist)."""
-    out: dict[str, list[pd.DataFrame]] = {}
-    for p in sorted((res / "predictions").glob(f"{task_name}__*__{split}__seed*.parquet")):
-        model = p.name.split("__")[1]
-        out.setdefault(model, []).append(pd.read_parquet(p))
-    merged = {}
-    for model, frames in out.items():
-        base = frames[0].copy()
-        if len(frames) > 1:
-            base["y_pred"] = np.mean([f["y_pred"].to_numpy() for f in frames], axis=0)
-        merged[model] = base
-    return merged
+    return {p.name.split("__")[1]: pd.read_parquet(p)
+            for p in sorted((res / "predictions").glob(f"{task_name}__*__{split}.parquet"))}
+
+
+def paper_comparison(test: pd.DataFrame) -> pd.DataFrame:
+    """Paper Table 5 followed by our test-set rows, all in the paper's min-max-scaled units."""
+    paper = PAPER_TABLE5.rename(columns={"model": "model"}).assign(
+        source="paper", setting="same-hour inputs, random 75/25 split", horizon_h=np.nan, r2_pearson=np.nan)
+    paper["rows"] = "clean"
+    ours = test.assign(source="ours", horizon_h=test["horizon"].astype(float), rows=test["subset"],
+                       setting="chronological split, test = Nov-Dec")
+    ours = ours.assign(model=ours["model"].map(model_label))
+    cols = ["source", "model", "setting", "horizon_h", "rows", "mae_scaled", "mse_scaled", "rmse_scaled", "r2",
+            "r2_pearson"]
+    ours = ours.sort_values(["rows", "horizon_h", "rmse_scaled"], ascending=[False, True, True])
+    return pd.concat([paper[cols], ours[cols]], ignore_index=True)
+
+
+def pick_headline(test: pd.DataFrame, cfg: Config) -> pd.Series | None:
+    """The fine-tuned row that goes next to the paper's (falls back to zero-shot if none exists)."""
+    h = cfg["report"]["headline"]
+    sub = test[(test["variant"] == h["variant"]) & (test["horizon"] == int(h["horizon"]))
+               & (test["subset"] == h["subset"]) & (test["family"] == "chronos2")]
+    tuned = sub[~sub["model"].str.contains("zeroshot")]
+    pool = tuned if len(tuned) else sub
+    return None if pool.empty else pool.sort_values("rmse_kw").iloc[0]
+
+
+def slides_table(test: pd.DataFrame, cfg: Config) -> str:
+    rows = [{"Model": r["model"] + (" (best in paper)" if r["model"] == PAPER_BEST else ""), "MAE": r["mae_scaled"],
+             "MSE": r["mse_scaled"], "RMSE": r["rmse_scaled"], "R2": r["r2"]} for _, r in PAPER_TABLE5.iterrows()]
+    head = pick_headline(test, cfg)
+    note = "No Chronos-2 result found yet for the headline setting."
+    if head is not None:
+        rows.append({"Model": model_label(head["model"]), "MAE": head["mae_scaled"], "MSE": head["mse_scaled"],
+                     "RMSE": head["rmse_scaled"], "R2": head["r2"]})
+        h = cfg["report"]["headline"]
+        note = (
+            f"Paper rows: {PAPER_CITATION} (random 75/25 split, cleaned rows, min-max-scaled errors).\n"
+            f"Our row: {head['model']}, horizon {h['horizon']} h, test months (chronological split), "
+            f"'{h['subset']}' rows, errors divided by the training min-max range of active power.\n"
+            "The split differs (ours is chronological and harder), and Chronos-2 also sees the power history, "
+            "which the paper's networks did not. See tables/paper_comparison.md for every variant and horizon."
+        )
+    return "## Results on the test set (slide table)\n\n" + to_markdown(pd.DataFrame(rows)) + "\n" + note + "\n"
+
+
+def finetune_summary(tables: Path) -> pd.DataFrame:
+    rows = []
+    for p in sorted(tables.glob("finetune_best_*.json")):
+        i = json.loads(p.read_text())
+        rows.append({
+            "method": i["method"], "variant": i["variant"], "context_h": i["context_length"],
+            "learning_rate": i["learning_rate"], "best_step": i["best_step"], "num_steps": i["num_steps"],
+            "val_rmse_zero_shot_kw": i["zero_shot_val_rmse_kw"], "val_rmse_best_kw": i["best_val_rmse_kw"],
+            "val_gain_pct": 100 * (1 - i["best_val_rmse_kw"] / i["zero_shot_val_rmse_kw"]),
+            "trainable_params": i["trainable_params"], "total_params": i.get("total_params"),
+            "train_seconds": i.get("train_seconds"), "device": i.get("device"),
+        })
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -133,232 +157,233 @@ def _plt():
         "figure.facecolor": SURFACE, "axes.facecolor": SURFACE, "savefig.facecolor": SURFACE,
         "axes.edgecolor": GRID, "axes.labelcolor": TEXT2, "xtick.color": TEXT2, "ytick.color": TEXT2,
         "text.color": TEXT, "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8,
-        "axes.spines.top": False, "axes.spines.right": False, "font.size": 10,
-        "axes.titlesize": 11, "axes.titleweight": "bold", "legend.frameon": False,
+        "axes.spines.top": False, "axes.spines.right": False, "font.size": 10, "axes.axisbelow": True,
+        "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left", "legend.frameon": False,
     })
     return plt
 
 
-GROUP_ORDER = ["linear", "xgboost", "ann", "cnn", "rnn", "lstm", "chronos2_zeroshot", "chronos2_finetuned"]
-GREY = "#8a8984"
+def _save(fig, path: Path) -> Path:
+    fig.tight_layout()
+    fig.savefig(path, dpi=160)
+    import matplotlib.pyplot as plt
+
+    plt.close(fig)
+    return path
 
 
-def display_group(model: str) -> str:
-    if model.startswith("chronos2_zeroshot"):
-        return "chronos2_zeroshot"
-    if model.startswith("chronos2_"):
-        return "chronos2_finetuned"
-    return model
+def fig_paper_comparison(test: pd.DataFrame, cfg: Config, out: Path) -> Path | None:
+    """Scaled RMSE and R^2: the paper's four networks and our models in the headline setting."""
+    h = cfg["report"]["headline"]
+    ours = test[(test["horizon"] == int(h["horizon"])) & (test["subset"] == h["subset"])]
+    if ours.empty:
+        return None
+    bars = [(r["model"], "paper", r["rmse_scaled"], r["r2"]) for _, r in PAPER_TABLE5.iterrows()]
+    bars += [(model_label(r["model"]), model_group(r["model"]), r["rmse_scaled"], r["r2"])
+             for _, r in ours.sort_values("rmse_scaled", ascending=False).iterrows()]
+    labels, groups = [b[0] for b in bars], [b[1] for b in bars]
+    plt = _plt()
+    fig, axes = plt.subplots(1, 2, figsize=(11, 0.42 * len(bars) + 1.6), sharey=True)
+    for ax, col, title, fmt in ((axes[0], 2, "RMSE, min-max scaled (lower is better)", "{:.4f}"),
+                                (axes[1], 3, "R² (higher is better)", "{:.3f}")):
+        vals = np.array([b[col] for b in bars], dtype=float)
+        y = np.arange(len(bars))[::-1]
+        ax.barh(y, vals, height=0.62, color=[GROUP_COLORS[g] for g in groups])
+        span = np.nanmax(np.abs(vals)) or 1.0
+        for yi, v in zip(y, vals):
+            ax.text(max(v, 0) + 0.012 * span, yi, fmt.format(v), va="center", fontsize=8.5, color=TEXT)
+        ax.set_yticks(y, labels)
+        ax.set_title(title)
+        ax.set_xlim(min(0.0, np.nanmin(vals) * 1.1), span * 1.14)
+        ax.grid(axis="y", visible=False)
+    from matplotlib.patches import Patch
+
+    fig.suptitle(f"Paper Table 5 vs Chronos-2: {h['horizon']} h ahead, '{h['subset']}' test hours (Nov-Dec)",
+                 x=0.01, ha="left", fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=(0, 0.07, 1, 1))  # leave a strip under the plots for the legend
+    fig.legend(handles=[Patch(color=GROUP_COLORS[g], label=GROUP_LABELS[g]) for g in GROUP_COLORS if g in groups],
+               loc="lower center", ncol=4, fontsize=9)
+    path = out / "paper_comparison.png"
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
 
 
-def model_color(model: str) -> str:
-    """Fixed colour per model *group* (8 validated slots); baselines without a slot are grey."""
-    g = display_group(model)
-    return PALETTE[GROUP_ORDER.index(g)] if g in GROUP_ORDER else GREY
-
-
-def pick_models(ranked: list[str], k: int = 5, with_persistence: bool = True) -> list[str]:
-    """Best model of each group (at most k), so every plotted series has a distinct colour."""
-    seen, out = set(), []
-    for m in ranked:
-        g = display_group(m)
-        if g in seen or g not in GROUP_ORDER:
-            continue
-        seen.add(g)
-        out.append(m)
-        if len(out) == k:
-            break
-    if with_persistence and "persistence" in ranked:
-        out.append("persistence")
-    return out
-
-
-def fig_binned(binned: pd.DataFrame, task_name: str, out: Path, models: list[str]) -> Path:
+def fig_binned(binned: pd.DataFrame, task_name: str, models: list[str], out: Path) -> Path:
     plt = _plt()
     sub = binned[binned["task"] == task_name]
     bins = list(dict.fromkeys(sub["wind_bin"]))
-    fig, ax = plt.subplots(figsize=(9, 4.2))
+    fig, ax = plt.subplots(figsize=(9.5, 4.4))
     width = 0.8 / max(len(models), 1)
     x = np.arange(len(bins))
+    hatches = ["", "////", "....", "xxxx"]  # tells models of one group apart without relying on colour
+    seen: dict[str, int] = {}
     for i, m in enumerate(models):
+        g = model_group(m)
+        k = seen.get(g, 0)
+        seen[g] = k + 1
         vals = sub[sub["model"] == m].set_index("wind_bin").reindex(bins)["rmse_kw"].to_numpy()
-        ax.bar(x + (i - (len(models) - 1) / 2) * width, vals, width * 0.92, color=model_color(m), label=m,
-               edgecolor=SURFACE, linewidth=1)
-    ax.set_xticks(x, [f"{b} m/s" for b in bins])
+        ax.bar(x + (i - (len(models) - 1) / 2) * width, vals, width * 0.9, color=GROUP_COLORS[g],
+               hatch=hatches[k % len(hatches)], edgecolor=SURFACE, linewidth=1, label=model_label(m))
+    counts = sub[sub["model"] == models[0]].set_index("wind_bin").reindex(bins)["n"]
+    ax.set_xticks(x, [f"{b} m/s\n(n={int(n)})" for b, n in zip(bins, counts.fillna(0))])
     ax.set_ylabel("RMSE (kW)")
-    ax.set_title(f"Test RMSE by wind-speed bin ({task_name})")
+    ax.set_title(f"Test RMSE by wind speed at the target hour, {task_name[1:]} h ahead")
     ax.grid(axis="x", visible=False)
-    ax.legend(ncol=min(4, len(models)), loc="upper left", fontsize=8)
-    fig.tight_layout()
-    path = out / f"binned_rmse_{task_name}.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    return path
+    ax.legend(loc="upper left", fontsize=8, ncol=2)
+    return _save(fig, out / f"binned_rmse_{task_name}.png")
 
 
-def fig_power_curve(preds: dict[str, pd.DataFrame], model: str, task_name: str, out: Path, color: str) -> Path:
+def fig_power_curve(d: pd.DataFrame, model: str, task_name: str, out: Path) -> Path:
     plt = _plt()
-    d = preds[model]
-    fig, ax = plt.subplots(figsize=(6.5, 4.5))
-    ax.scatter(d["wind_speed"], d["y_true"], s=8, color="#b5b4ae", alpha=0.6, label="actual", linewidths=0)
-    ax.scatter(d["wind_speed"], d["y_pred"], s=8, color=color, alpha=0.6, label=f"predicted ({model})",
-               linewidths=0)
-    ax.set_xlabel("Wind speed at target hour (m/s)")
+    fig, ax = plt.subplots(figsize=(6.8, 4.6))
+    ax.scatter(d["wind_speed"], d["y_true"], s=9, color="#8a8984", alpha=0.55, label="Actual", linewidths=0)
+    ax.scatter(d["wind_speed"], d["y_pred"], s=9, color=GROUP_COLORS[model_group(model)], alpha=0.55,
+               label=model_label(model), linewidths=0)
+    ax.set_xlabel("Wind speed at the target hour (m/s)")
     ax.set_ylabel("Active power (kW)")
-    ax.set_title(f"Power curve: actual vs predicted ({task_name}, test)")
-    ax.legend(loc="lower right", markerscale=2)
-    fig.tight_layout()
-    path = out / f"power_curve_{task_name}_{model}.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    return path
+    ax.set_title(f"Power curve, actual vs predicted ({task_name[1:]} h ahead, test)")
+    ax.legend(loc="lower right", markerscale=2, fontsize=8)
+    return _save(fig, out / f"power_curve_{task_name}.png")
 
 
-def fig_sample_week(preds: dict[str, pd.DataFrame], models: list[str], task_name: str, start: str,
-                    out: Path) -> Path | None:
+def fig_sample_week(preds: dict[str, pd.DataFrame], models: list[str], band_model: str | None, task_name: str,
+                    start: str, out: Path) -> Path:
     plt = _plt()
-    t0 = pd.Timestamp(start)
-    t1 = t0 + pd.Timedelta(days=7)
     first = next(iter(preds.values()))
-    win = (first["target_time"] >= t0) & (first["target_time"] < t1)
-    if win.sum() == 0:
+    t0 = pd.Timestamp(start)
+    if not ((first["target_time"] >= t0) & (first["target_time"] < t0 + pd.Timedelta(days=7))).any():
         t0 = first["target_time"].iloc[0]
-        t1 = t0 + pd.Timedelta(days=7)
-        win = (first["target_time"] >= t0) & (first["target_time"] < t1)
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(first.loc[win, "target_time"], first.loc[win, "y_true"], color=ACTUAL_COLOR, lw=2, label="actual")
+    t1 = t0 + pd.Timedelta(days=7)
+    fig, ax = plt.subplots(figsize=(10.5, 4.2))
+    if band_model and "q10" in preds[band_model]:
+        d = preds[band_model]
+        w = (d["target_time"] >= t0) & (d["target_time"] < t1)
+        ax.fill_between(d.loc[w, "target_time"], d.loc[w, "q10"], d.loc[w, "q90"], linewidth=0, alpha=0.18,
+                        color=GROUP_COLORS[model_group(band_model)], label="10-90% interval")
+    w = (first["target_time"] >= t0) & (first["target_time"] < t1)
+    ax.plot(first.loc[w, "target_time"], first.loc[w, "y_true"], color=TEXT, lw=2, label="Actual")
     for m in models:
         d = preds[m]
         w = (d["target_time"] >= t0) & (d["target_time"] < t1)
-        ax.plot(d.loc[w, "target_time"], d.loc[w, "y_pred"], color=model_color(m), lw=1.6, label=m,
-                ls="--" if m == "persistence" else "-")
+        ax.plot(d.loc[w, "target_time"], d.loc[w, "y_pred"], color=GROUP_COLORS[model_group(m)], lw=1.6,
+                ls="--" if model_group(m) == "reference" else "-", label=model_label(m))
     ax.set_ylabel("Active power (kW)")
-    ax.set_title(f"Forecast vs actual, sample week ({task_name})")
-    ax.legend(ncol=5, loc="upper left", fontsize=8)
+    ax.set_title(f"Forecast vs actual, {task_name[1:]} h ahead, week of {t0:%d %b %Y}")
+    ax.legend(ncol=2, loc="upper left", fontsize=8)
     fig.autofmt_xdate()
-    fig.tight_layout()
-    path = out / f"sample_week_{task_name}.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    return path
+    return _save(fig, out / f"sample_week_{task_name}.png")
 
 
-def fig_skill(table: pd.DataFrame, out: Path) -> Path | None:
+def fig_finetune_curves(tables: Path, ckpt_root: Path, out: Path) -> list[Path]:
+    """Validation RMSE against training step for every grid point of every fine-tuning run."""
     plt = _plt()
-    sub = table[(table["protocol"] == "B") & table["skill_vs_persistence_mean"].notna()]
-    if sub.empty:
-        return None
-    horizons = sorted(sub["horizon"].unique())
-    fig, axes = plt.subplots(1, len(horizons), figsize=(5.5 * len(horizons), 4), squeeze=False)
-    for ax, h in zip(axes[0], horizons):
-        s = sub[(sub["horizon"] == h) & (sub["model"] != "persistence")].sort_values("skill_vs_persistence_mean")
-        # one series -> one colour; bars are identified by their axis labels
-        ax.barh(s["model"], s["skill_vs_persistence_mean"], color=PALETTE[0],
-                xerr=s["skill_vs_persistence_std"].fillna(0), ecolor=TEXT2, height=0.6)
-        ax.axvline(0, color=TEXT2, lw=1)
-        ax.set_title(f"Skill vs persistence, h={h}")
-        ax.set_xlabel("1 - RMSE / RMSE_persistence")
-        ax.grid(axis="y", visible=False)
-    fig.tight_layout()
-    path = out / "skill_vs_persistence.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    return path
+    paths = []
+    for best in sorted(tables.glob("finetune_best_*.json")):
+        info = json.loads(best.read_text())
+        runs = sorted((ckpt_root / "chronos2" / info["method"] / info["variant"]).glob("*/windfc_finetune.json"))
+        runs = [json.loads(r.read_text()) for r in runs] or [info]
+        fig, ax = plt.subplots(figsize=(7.5, 4.2))
+        styles = ["-", "--", ":", "-."]
+        for i, r in enumerate(runs):
+            is_best = (r["context_length"], r["learning_rate"]) == (info["context_length"], info["learning_rate"])
+            hist = pd.DataFrame(r["history"])
+            ax.plot(hist["step"], hist["val_rmse_kw"], marker="o", ms=4, lw=2.2 if is_best else 1.4,
+                    ls=styles[i % len(styles)], color=GROUP_COLORS["finetuned"] if is_best else "#8a8984",
+                    label=f"context {r['context_length']} h, lr {r['learning_rate']:g}"
+                          + ("  (selected)" if is_best else ""))
+        ax.axhline(info["zero_shot_val_rmse_kw"], color=GROUP_COLORS["zeroshot"], lw=1.2, ls=(0, (1, 2)))
+        ax.annotate("zero-shot (selected context)", (ax.get_xlim()[1], info["zero_shot_val_rmse_kw"]),
+                    ha="right", va="bottom", fontsize=8, color=TEXT2)
+        ax.set_xlabel("Training step")
+        ax.set_ylabel("Validation RMSE (kW)")
+        ax.ticklabel_format(axis="y", useOffset=False)
+        name = {"lora": "LoRA", "qlora": "QLoRA"}.get(info["method"], info["method"])
+        ax.set_title(f"{name} fine-tuning, {VARIANT_LABELS.get(info['variant'], info['variant'])}")
+        ax.legend(fontsize=8)
+        paths.append(_save(fig, out / f"finetune_curve_{info['method']}_{info['variant']}.png"))
+    return paths
 
 
 # ---------------------------------------------------------------------------
 # Main entry
 # ---------------------------------------------------------------------------
 def make_report(cfg: Config) -> dict[str, Path]:
-    banner("Phase 6: report")
+    banner("Report")
+    from .utils import checkpoints_dir
+
     res = results_dir(cfg)
     tables, figs = res / "tables", res / "figures"
     m = load_metrics(res)
-    agg = aggregate_seeds(m)
+    test = m[m["split"] == "test"].copy()
     written: dict[str, Path] = {}
 
-    # Main table: test split, all targets.
-    main = agg[(agg["split"] == "test") & (agg["subset"] == "all")].copy()
-    main = main.sort_values(["protocol", "horizon", "rmse_kw_mean"])
-    cols = ["model", "protocol", "horizon", "n_seeds", "mae_kw_mean", "mae_kw_std", "rmse_kw_mean", "rmse_kw_std",
-            "r2_mean", "mae_scaled_mean", "rmse_scaled_mean", "skill_vs_persistence_mean"]
-    pretty = main[cols].rename(columns=lambda c: c.replace("_mean", ""))
-    write_table(pretty, tables / "main_results", caption="Test-set results (Nov--Dec 2018 for protocol B).",
-                latex=True)
+    main = test.sort_values(["horizon", "subset", "rmse_kw"])[
+        ["model", "variant", "horizon", "subset", "n", "mae_kw", "rmse_kw", "r2", "mae_scaled", "rmse_scaled",
+         "skill_vs_persistence", "interval_coverage"]]
+    write_table(main, tables / "main_results", ".3f")
     written["main"] = tables / "main_results.csv"
-    print(to_markdown(pretty, ".3f"))
+    print(to_markdown(main[main["subset"] == "all"].drop(columns="subset"), ".3f"))
 
-    clean = agg[(agg["split"] == "test") & (agg["subset"] == "clean")]
-    if not clean.empty:
-        write_table(clean[cols].rename(columns=lambda c: c.replace("_mean", "")), tables / "main_results_clean")
+    note = (
+        f"Paper rows are quoted from {PAPER_CITATION}; its networks were not re-trained here.\n"
+        "Scaled errors = kW errors divided by the training min-max range of active power (MSE by its square).\n"
+        "r2 = 1 - SS_res/SS_tot. r2_pearson = squared correlation, which is how the paper's Eq. (2) defines R2.\n"
+        "rows: clean = only hours passing the paper's cleaning rules; all = every hour.\n"
+        "Only the 'paper inputs' models and the power curve use the paper's information (same-hour wind speed, "
+        "theoretical power, weather). The paper used a random split; ours is chronological."
+    )
+    write_table(paper_comparison(test), tables / "paper_comparison", note=note)
+    written["paper_comparison"] = tables / "paper_comparison.md"
+    (tables / "slides_results.md").write_text(slides_table(test, cfg))
+    written["slides"] = tables / "slides_results.md"
 
-    # Protocol A vs B for the paper nets.
-    nets = main[main["family"] == "paper_net"]
-    if not nets.empty:
-        ab = nets.pivot_table(index="model", columns=["protocol", "horizon"], values="r2_mean")
-        ab.columns = [f"R2_{p}" + (f"_h{h}" if p == "B" else "") for p, h in ab.columns]
-        ab = ab.reset_index()
-        write_table(ab, tables / "protocol_a_vs_b")
+    ft = finetune_summary(tables)
+    if not ft.empty:
+        write_table(ft, tables / "finetune_summary", ".4g")
 
-    # Comparison with paper Table 5 (scaled units).
-    pa = main[(main["protocol"] == "A") & (main["family"] == "paper_net")]
-    if not pa.empty:
-        mse_s = m[(m["protocol"] == "A") & (m["split"] == "test")].groupby("model")["mse_scaled"].mean()
-        comp = PAPER_TABLE5.merge(
-            pa[["model", "mae_scaled_mean", "rmse_scaled_mean", "r2_mean"]], on="model", how="left"
-        ).rename(columns={"mae_scaled_mean": "ours_mae", "rmse_scaled_mean": "ours_rmse", "r2_mean": "ours_r2"})
-        comp["ours_mse"] = comp["model"].map(mse_s)
-        comp = comp[["model", "paper_mae", "ours_mae", "paper_mse", "ours_mse", "paper_rmse", "ours_rmse",
-                     "paper_r2", "ours_r2"]]
-        write_table(comp, tables / "paper_comparison")
-
-    # Per-task: binned errors, bootstrap vs persistence, figures.
     binned_rows, boot_rows = [], []
-    task_names = ["A"] + [f"B_h{int(h)}" for h in cfg["protocol_b"]["horizons"]]
-    for tname in task_names:
+    n_boot = int(cfg["report"].get("bootstrap_samples", 2000))
+    for h in cfg["evaluation"]["horizons"]:
+        tname = f"h{int(h)}"
         preds = load_predictions(res, tname)
         if not preds:
             continue
         for model, d in preds.items():
-            b = binned_errors(d["y_true"], d["y_pred"], d["wind_speed"], cfg["metrics"]["wind_bins"])
+            b = binned_errors(d["y_true"], d["y_pred"], d["wind_speed"], cfg["evaluation"]["wind_bins"])
             b.insert(0, "model", model)
             b.insert(0, "task", tname)
             binned_rows.append(b)
-            if "persistence" in d and tname != "A" and model != "persistence":
-                bs = bootstrap_rmse_diff(d["y_true"], d["y_pred"], d["persistence"],
-                                         n_boot=int(cfg["report"].get("bootstrap_samples", 2000)))
-                boot_rows.append({"task": tname, "model": model, **bs})
+            if model != "persistence":
+                boot_rows.append({"task": tname, "model": model, "versus": "persistence",
+                                  **bootstrap_rmse_diff(d["y_true"], d["y_pred"], d["persistence"], n_boot)})
+            if model_group(model) == "finetuned":
+                zero = "chronos2_zeroshot_" + model.split("_", 2)[2]
+                if zero in preds:
+                    boot_rows.append({"task": tname, "model": model, "versus": zero,
+                                      **bootstrap_rmse_diff(d["y_true"], d["y_pred"], preds[zero]["y_pred"], n_boot)})
+        ranked = [x for x in test[(test["horizon"] == int(h)) & (test["subset"] == "all")]
+                  .sort_values("rmse_kw")["model"] if x in preds]
+        chronos = [x for x in ranked if model_group(x) != "reference"]
+        if not chronos:
+            continue
+        # shown: the best fine-tuned model (else the best zero-shot one), its zero-shot twin, persistence
+        tuned = [x for x in chronos if model_group(x) == "finetuned"]
+        best = tuned[0] if tuned else chronos[0]
+        twin = "chronos2_zeroshot_" + best.split("_", 2)[2]
+        shown = list(dict.fromkeys([best] + ([twin] if twin in preds else []) + ["persistence"]))
         binned = pd.concat(binned_rows, ignore_index=True)
-        ranking = main[(main["protocol"] == tname[0]) &
-                       (main["horizon"] == (int(tname.split("h")[1]) if tname != "A" else 0))]
-        ranked = [x for x in ranking.sort_values("rmse_kw_mean")["model"] if x in preds]
-        if ranked:
-            written[f"binned_{tname}"] = fig_binned(binned, tname, figs, pick_models(ranked, k=6))
-            best = pick_models(ranked, k=1, with_persistence=False)
-            if best:
-                written[f"curve_{tname}"] = fig_power_curve(preds, best[0], tname, figs, model_color(best[0]))
-            if tname != "A":
-                fig_sample_week(preds, pick_models(ranked, k=3), tname, cfg["report"]["sample_week_start"], figs)
+        written[f"binned_{tname}"] = fig_binned(binned, tname, shown, figs)
+        written[f"curve_{tname}"] = fig_power_curve(preds[best], best, tname, figs)
+        fig_sample_week(preds, shown, best, tname, cfg["report"]["sample_week_start"], figs)
     if binned_rows:
         pd.concat(binned_rows, ignore_index=True).to_csv(tables / "binned_errors.csv", index=False)
     if boot_rows:
-        pd.DataFrame(boot_rows).to_csv(tables / "bootstrap_vs_persistence.csv", index=False)
-    fig_skill(main, figs)
-
-    # Slide table: protocol A paper nets + best Chronos fine-tuned (the "attention-based" row).
-    slide = []
-    for _, r in PAPER_TABLE5.iterrows():
-        row = pa[pa["model"] == r["model"]]
-        slide.append({"model": r["model"].upper(), "MAE": row["mae_scaled_mean"].mean() if len(row) else np.nan,
-                      "MSE": float(mse_s.get(r["model"], np.nan)) if not pa.empty else np.nan,
-                      "RMSE": row["rmse_scaled_mean"].mean() if len(row) else np.nan,
-                      "R2": row["r2_mean"].mean() if len(row) else np.nan})
-    slide_md = "## Paper protocol (A), scaled units\n\n" + to_markdown(pd.DataFrame(slide))
-    ft = main[(main["family"] == "chronos2") & ~main["model"].str.contains("zeroshot")]
-    if not ft.empty:
-        slide_md += "\n## Attention-based model (Chronos-2 fine-tuned), protocol B\n\n" + to_markdown(
-            ft[["model", "horizon", "mae_kw_mean", "rmse_kw_mean", "r2_mean", "mae_scaled_mean",
-                "rmse_scaled_mean"]].rename(columns=lambda c: c.replace("_mean", "")))
-    (tables / "slides_results.md").write_text(slide_md)
-    print(f"\nTables -> {tables}\nFigures -> {figs}")
+        pd.DataFrame(boot_rows).to_csv(tables / "bootstrap.csv", index=False)
+    p = fig_paper_comparison(test, cfg, figs)
+    if p:
+        written["fig_paper"] = p
+    fig_finetune_curves(tables, checkpoints_dir(cfg), figs)
+    print((tables / "slides_results.md").read_text())
+    print(f"Tables  -> {tables}\nFigures -> {figs}")
     return written

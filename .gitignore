@@ -2,7 +2,6 @@
 # Datasets (never commit raw/derived data; see README "Dataset")
 # ---------------------------------------------------------------------------
 data/raw/*
-data/interim/*
 data/processed/*
 !data/**/.gitkeep
 *.zip
@@ -14,16 +13,15 @@ data/processed/*
 *.nc4
 
 # ---------------------------------------------------------------------------
-# Run outputs (metrics.csv and figures ARE committed; heavy stuff is not)
+# Run outputs (metrics.csv, tables and figures ARE committed; heavy stuff is not)
 # ---------------------------------------------------------------------------
 results/predictions/*
 !results/predictions/.gitkeep
 results/smoke/
 data/synthetic/
-results/demo/
 results/runs/
 checkpoints/
-runs/
+chronos-2-finetuned/
 lightning_logs/
 wandb/
 mlruns/

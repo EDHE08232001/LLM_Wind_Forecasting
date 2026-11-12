@@ -13,7 +13,8 @@ Pipeline (``build_hourly_dataset``), following Karaman (2023) Sec. 2.1:
 5. Merge with weather on the UTC timestamp.
 6. Compute cleaning flags (cut-in / cut-out, non-positive power, IQR outliers).
    Rows are *flagged* rather than dropped so the series stays regular for
-   forecasting; protocol A drops flagged rows like the paper does.
+   Chronos-2; metrics are reported on all hours and on the "clean" hours the
+   paper kept.
 """
 
 from __future__ import annotations
@@ -297,7 +298,7 @@ def build_hourly_dataset(cfg: Config, scada_csv: str | Path | None = None, weath
     fit_on = imp.get("fit_on", "train")
     if fit_on == "train":
         # Neighbours may only come from the training months (Jan-Aug).
-        train_end = pd.Timestamp(cfg["protocol_b"]["train_end"])
+        train_end = pd.Timestamp(cfg["split"]["train_end"])
         fit_mask = np.asarray(grid <= train_end + pd.Timedelta(minutes=59))
     else:
         fit_mask = np.ones(len(grid), dtype=bool)
