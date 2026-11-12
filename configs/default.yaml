@@ -1,17 +1,14 @@
-# Default configuration for the full experiment (real data).
-# Every script takes `--config <this file>`; any key can be overridden on the
-# command line with `--set key.sub=value` (e.g. --set train.epochs=5).
+# Default configuration: the full experiment on the real data.
+# Every script takes `--config <this file>`; any key can be overridden on the command line with
+# `--set key.sub=value` (for example --set finetune.num_steps=300).
 
 name: default
 seed: 42
 device: auto            # auto | cuda | mps | cpu   (auto = cuda > mps > cpu)
 
 paths:
-  raw_dir: data/raw
-  interim_dir: data/interim
-  processed_dir: data/processed
   scada_csv: data/raw/T1.csv                      # Kaggle "wind-turbine-scada-dataset"
-  weather_csv: data/raw/weather_merra2_2018.csv   # NASA POWER (MERRA-2) or renewables.ninja export
+  weather_csv: data/raw/weather_merra2_2018.csv   # NASA POWER (MERRA-2) or a renewables.ninja export
   processed: data/processed/hourly_clean.parquet
   results_dir: results
   checkpoints_dir: checkpoints
@@ -20,10 +17,8 @@ site:
   name: Esenkoy (Nordex N117/3600)
   latitude: 40.58545
   longitude: 28.99035
-  rated_power_kw: 3600
-  # Offset (hours) to convert SCADA timestamps to UTC (weather is in UTC).
-  # The Kaggle file does not document its timezone; Turkey is UTC+3.
-  # 0 keeps timestamps as-is (what the paper effectively did).
+  # Hours to subtract from SCADA timestamps to get UTC (the weather is in UTC). The Kaggle file does
+  # not document its timezone; Turkey is UTC+3. 0 keeps timestamps as they are, like the paper.
   scada_utc_offset_hours: 0
 
 data:
@@ -31,88 +26,45 @@ data:
   freq_raw: 10min
   resample: first        # first = keep the on-the-hour sample (paper); mean = hourly average
   impute:
-    k: 5                 # kNN imputation, k=5 as in the paper
-    fit_on: train        # train = fit imputer on the training period only (no leakage) | all
-  clean:
+    k: 5                 # kNN imputation with k = 5, as in the paper
+    fit_on: train        # train = neighbours come from the training months only (no leakage) | all
+  clean:                 # the paper's cleaning rules; rows are flagged, not dropped
     cut_in_ms: 3.5
     cut_out_ms: 25.5
     iqr_factor: 1.5
 
-features:
-  # Same-hour inputs used by the paper (protocol A). The paper's tables imply 10 inputs;
-  # these are the 9 documented ones (see README: "Parameter counts").
-  paper_inputs: [wind_speed, wind_direction, theoretical_power, temperature, precipitation,
-                 air_density, ground_irradiance, toa_irradiance, cloud_cover]
-  # Channels of the look-back window used by the neural nets in protocol B.
-  window_inputs: [active_power, wind_speed, wd_sin, wd_cos, theoretical_power, temperature,
-                  precipitation, air_density, ground_irradiance, toa_irradiance, cloud_cover]
-  lookback: 24           # hours of history fed to the nets (protocol B)
-  lags: [1, 2, 3, 6, 12, 24]
-  lag_columns: [active_power, wind_speed]
-  rolling_windows: [6, 24]
-  current_columns: [wind_speed, wd_sin, wd_cos, theoretical_power, temperature, precipitation,
-                    air_density, ground_irradiance, toa_irradiance, cloud_cover]
-
-protocol_a:              # paper protocol: random split, same-hour regression
-  test_size: 0.25
-  seed: 42
-
-protocol_b:              # our protocol: chronological split, lagged inputs only
+split:                   # chronological: train Jan-Aug, validation Sep-Oct, test Nov-Dec
   train_end: "2018-08-31 23:00"
-  val_end: "2018-10-31 23:00"     # test = everything after (Nov-Dec)
-  horizons: [1, 24]
-  eval_subsets: [all, clean]      # "clean" = only target hours that pass the paper's cleaning rules
+  val_end: "2018-10-31 23:00"
 
-metrics:
-  wind_bins: [0, 5, 10, 13, 26]
-
-baselines:
-  models: [persistence, seasonal_naive, linear, xgboost]
-  xgboost:
-    n_estimators: 2000
-    early_stopping_rounds: 50
-    grid:
-      max_depth: [3, 5, 7]
-      learning_rate: [0.03, 0.1]
-      subsample: [0.8]
-      colsample_bytree: [0.8]
-    # Params used when there is no validation set (protocol A)
-    default: {max_depth: 6, learning_rate: 0.05, n_estimators: 600, subsample: 0.8, colsample_bytree: 0.8}
-
-train:                   # paper nets (ANN / CNN / RNN / LSTM)
-  models: [ann, cnn, rnn, lstm]
-  epochs: 100
-  batch_size: 32
-  lr: 0.001
-  patience: 10           # early stopping on validation (protocol B only)
-  seeds_protocol_b: [0, 1, 2, 3, 4]
-  num_workers: 0
-  save_checkpoints: true
+evaluation:
+  horizons: [1, 24]      # hours ahead
+  subsets: [all, clean]  # clean = only the target hours the paper's cleaning rules keep
+  wind_bins: [0, 5, 10, 13, 26]   # m/s, for the error-by-wind-speed analysis
 
 chronos:
   model_id: amazon/chronos-2
-  context_length: 512    # hours of history given to Chronos-2
-  batch_size: 256        # Chronos counts *series* per batch (target + each covariate)
-  quantile_levels: [0.1, 0.5, 0.9]
+  context_length: 512    # hours of history for zero-shot
+  batch_size: 256        # Chronos-2 counts series per batch (the target plus each covariate)
   covariates: [wind_speed, wd_sin, wd_cos, theoretical_power, temperature, precipitation,
                air_density, ground_irradiance, toa_irradiance, cloud_cover]
-  # Weather columns treated as "known in the future" in the future-covariate variant.
-  # Observed values are an optimistic stand-in for NWP forecasts (flagged in the report).
-  future_covariates: [temperature, precipitation, air_density, ground_irradiance,
-                      toa_irradiance, cloud_cover]
-  variants: [univariate, past_covariates, future_covariates]
+  # univariate      = power history only
+  # past_covariates = + history of the covariates (a true forecast)
+  # paper_inputs    = + the covariates at the target hours, i.e. the same-hour inputs the paper's
+  #                   networks used. This is the variant to compare with the paper's Table 5.
+  variants: [univariate, past_covariates, paper_inputs]
 
 finetune:
-  method: lora           # lora | qlora (4-bit, NVIDIA + bitsandbytes only) | full
-  variant: past_covariates   # which input set to fine-tune with (see chronos.variants)
-  context_lengths: [168, 336, 512]   # grid searched on the Sep-Oct validation period
-  learning_rates: [1.0e-4, 5.0e-4]
+  method: lora           # lora | qlora (4-bit base weights; NVIDIA GPU + bitsandbytes only)
+  variants: [paper_inputs, past_covariates]   # one adapter is trained per variant
+  context_lengths: [168, 512]   # grid, scored on the validation months
+  learning_rates: [1.0e-5, 1.0e-4]
   num_steps: 1000
-  batch_size: 256        # series per batch (each sample = target + covariates)
+  batch_size: 256        # series per batch (each training window = the target + its covariates)
   prediction_length: 24
-  eval_every: 200
-  select_best: true      # restore the step with the lowest validation RMSE (false = keep the last step)
-  grad_accum: 1
+  eval_every: 100        # validation RMSE is measured every this many steps
+  select_best: true      # keep the step with the lowest validation RMSE (step 0 = zero-shot counts)
+  val_max_origins: 400   # validation targets used for that measurement
   max_grad_norm: 1.0
   weight_decay: 0.0
   warmup_ratio: 0.05
@@ -120,12 +72,12 @@ finetune:
     r: 8
     alpha: 16
     dropout: 0.05
-    # Linear layers to adapt: attention projections (time + group attention) and the output
-    # patch head, as in the Chronos-2 default LoRA recipe.
+    # Adapters go on the attention projections (time attention and group attention) and on the
+    # output head, the same modules as the Chronos-2 library's own LoRA recipe.
     target_modules: [self_attention.q, self_attention.k, self_attention.v, self_attention.o,
                      output_patch_embedding.output_layer]
-  val_max_origins: 400   # origins used to score each grid point on validation
 
 report:
+  headline: {variant: paper_inputs, horizon: 1, subset: clean}   # the row put next to the paper's
   sample_week_start: "2018-11-12 00:00"
   bootstrap_samples: 2000

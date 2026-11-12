@@ -25,6 +25,17 @@ def r2(y: np.ndarray, yhat: np.ndarray) -> float:
     return float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
 
 
+def r2_pearson(y: np.ndarray, yhat: np.ndarray) -> float:
+    """Squared Pearson correlation: the R^2 the paper defines in its Eq. (2).
+
+    Unlike :func:`r2` it ignores bias and scale errors, so it is never lower.
+    """
+    y, yhat = np.asarray(y, dtype=np.float64), np.asarray(yhat, dtype=np.float64)
+    if len(y) < 2 or y.std() == 0 or yhat.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(y, yhat)[0, 1] ** 2)
+
+
 def regression_metrics(y: np.ndarray, yhat: np.ndarray, scale_range: float | None = None) -> dict[str, float]:
     """MAE / MSE / RMSE / R^2 in kW, plus min-max-scaled versions (paper Table 5 units).
 
@@ -39,6 +50,7 @@ def regression_metrics(y: np.ndarray, yhat: np.ndarray, scale_range: float | Non
         "mse_kw": mse(y, yhat),
         "rmse_kw": rmse(y, yhat),
         "r2": r2(y, yhat),
+        "r2_pearson": r2_pearson(y, yhat),
     }
     if scale_range:
         out["mae_scaled"] = out["mae_kw"] / scale_range
@@ -48,7 +60,7 @@ def regression_metrics(y: np.ndarray, yhat: np.ndarray, scale_range: float | Non
 
 
 def skill_score(rmse_model: float, rmse_reference: float) -> float:
-    """Persistence-relative skill: 1 - RMSE_model / RMSE_reference."""
+    """Skill relative to a reference forecast: 1 - RMSE_model / RMSE_reference."""
     return float(1.0 - rmse_model / rmse_reference) if rmse_reference > 0 else float("nan")
 
 

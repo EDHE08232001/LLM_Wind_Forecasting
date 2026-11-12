@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from windfc.metrics import binned_errors, bootstrap_rmse_diff, regression_metrics, skill_score
+from windfc.metrics import binned_errors, bootstrap_rmse_diff, r2_pearson, regression_metrics, skill_score
 
 
 def test_hand_computed():
@@ -20,6 +20,13 @@ def test_perfect_and_skill():
     y = np.arange(10.0)
     assert regression_metrics(y, y)["r2"] == 1.0
     assert skill_score(5.0, 10.0) == pytest.approx(0.5)
+
+
+def test_paper_r2_ignores_bias_but_ours_does_not():
+    y = np.arange(10.0)
+    biased = 2 * y + 5  # perfectly correlated, badly wrong
+    assert r2_pearson(y, biased) == pytest.approx(1.0)
+    assert regression_metrics(y, biased)["r2"] < 0
 
 
 def test_binned():

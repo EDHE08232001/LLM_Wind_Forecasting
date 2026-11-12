@@ -1,24 +1,21 @@
 <#
 .SYNOPSIS
-  Environment setup for Windows (NVIDIA CUDA or CPU). Creates .\venvWin
+  Environment setup for Windows 11 (PowerShell). Creates .\venvWin with PyTorch (NVIDIA CUDA or CPU),
+  Chronos-2, PEFT (LoRA), bitsandbytes (QLoRA, NVIDIA only) and the project itself.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\setup_env.ps1
   .\setup_env.ps1 -Download            # also download the dataset
-  .\setup_env.ps1 -Cpu                 # force CPU-only PyTorch
+  .\setup_env.ps1 -Recreate            # delete venvWin and rebuild it
+  .\setup_env.ps1 -Cpu                 # force the CPU-only PyTorch wheel
   .\setup_env.ps1 -Cuda cu134          # force a CUDA wheel index
-  .\setup_env.ps1 -NoChronos           # skip Chronos-2 / transformers / peft
-  .\setup_env.ps1 -QLoRA               # also install bitsandbytes (4-bit QLoRA)
-  .\setup_env.ps1 -Python "py -3.14" -Recreate
+  .\setup_env.ps1 -Python "py -3.13"   # use a specific interpreter
 
-  Afterwards:  .\venvWin\Scripts\Activate.ps1
-  (If activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned)
+  Afterwards:  .\run_pipeline.ps1      (or activate with .\venvWin\Scripts\Activate.ps1)
 #>
 param(
     [switch]$Cpu,
     [string]$Cuda = $env:TORCH_CUDA,
-    [switch]$NoChronos,
-    [switch]$QLoRA,
     [switch]$Download,
     [switch]$Recreate,
     [string]$Python = ""
@@ -35,82 +32,88 @@ function Test-PyVersion([string]$cmd) {
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }
 }
+function Assert-Ok([string]$what) {
+    if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: $what failed." -ForegroundColor Red; exit 1 }
+}
 
-# ------------------------------------------------------------------ python
+# ------------------------------------------------------------------ Python 3.10 - 3.14
 if (-not $Python) {
     foreach ($cand in @("py -3.14", "py -3.13", "py -3.12", "py -3.11", "py -3.10", "python", "python3")) {
         if (Test-PyVersion $cand) { $Python = $cand; break }
     }
 }
 if (-not $Python -or -not (Test-PyVersion $Python)) {
-    Write-Host "ERROR: need Python 3.10-3.14 (3.14 recommended). Install from https://www.python.org/downloads/ or: winget install Python.Python.3.14" -ForegroundColor Red
+    Write-Host "ERROR: Python 3.10 to 3.14 is required." -ForegroundColor Red
+    Write-Host "  Install it with:  winget install Python.Python.3.13   (then open a new terminal)"
     exit 1
 }
 $pyParts = $Python -split " "
 $pyExe = $pyParts[0]; $pyArgs = @($pyParts | Select-Object -Skip 1)
 Write-Host ">>> Using $(& $pyExe @pyArgs --version)"
 
-# ------------------------------------------------------------------ venv
+# ------------------------------------------------------------------ virtual environment
 if ($Recreate -and (Test-Path $Venv)) { Write-Host ">>> Removing $Venv"; Remove-Item -Recurse -Force $Venv }
-if (-not (Test-Path $Venv)) {
+$VPy = Join-Path $PSScriptRoot "$Venv\Scripts\python.exe"
+if (-not (Test-Path $VPy)) {
     Write-Host ">>> Creating virtual environment .\$Venv"
     & $pyExe @pyArgs -m venv $Venv
+    Assert-Ok "Creating the virtual environment"
 }
-$VPy = Join-Path $PSScriptRoot "$Venv\Scripts\python.exe"
 & $VPy -m pip install --upgrade pip setuptools wheel
+Assert-Ok "Upgrading pip"
 
-# ------------------------------------------------------------------ torch
+# ------------------------------------------------------------------ PyTorch
 function Get-CudaTag {
-    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-    if (-not $smi) { return "" }
-    $out = (& nvidia-smi) -join "`n"
-    $m = [regex]::Match($out, "CUDA Version:\s*(\d+)\.(\d+)")
+    # Map the newest CUDA version the NVIDIA driver supports (nvidia-smi header) to a PyTorch wheel index.
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return "" }
+    $m = [regex]::Match(((& nvidia-smi) -join "`n"), "CUDA Version:\s*(\d+)\.(\d+)")
     if (-not $m.Success) { return "" }
     $n = [int]$m.Groups[1].Value * 10 + [int]$m.Groups[2].Value
-    if ($n -ge 134) { return "cu134" }
-    if ($n -ge 132) { return "cu132" }
-    if ($n -ge 130) { return "cu130" }
-    if ($n -ge 129) { return "cu129" }
-    if ($n -ge 128) { return "cu128" }
-    if ($n -ge 126) { return "cu126" }
-    if ($n -ge 118) { return "cu118" }
+    foreach ($t in @(134, 132, 130, 129, 128, 126, 118)) { if ($n -ge $t) { return "cu$t" } }
     return ""
 }
 
-if ($Cpu) {
-    Write-Host ">>> Installing CPU-only PyTorch"
-    & $VPy -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+$withQlora = $false
+if (-not $Cpu -and -not $Cuda) { $Cuda = Get-CudaTag }
+if (-not $Cpu -and $Cuda) {
+    Write-Host ">>> NVIDIA GPU -> PyTorch wheel index $Cuda (+ bitsandbytes for QLoRA)"
+    & $VPy -m pip install torch --index-url "https://download.pytorch.org/whl/$Cuda"
+    $withQlora = $true
 } else {
-    if (-not $Cuda) { $Cuda = Get-CudaTag }
-    if ($Cuda) {
-        Write-Host ">>> NVIDIA GPU detected -> PyTorch wheel index $Cuda"
-        & $VPy -m pip install torch --index-url "https://download.pytorch.org/whl/$Cuda"
-    } else {
-        Write-Host ">>> No NVIDIA GPU detected -> CPU-only PyTorch"
-        & $VPy -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-    }
+    Write-Host ">>> Installing CPU-only PyTorch (no NVIDIA GPU found, or -Cpu given)"
+    & $VPy -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 }
-if ($LASTEXITCODE -ne 0) { Write-Host "PyTorch install failed" -ForegroundColor Red; exit 1 }
+Assert-Ok "Installing PyTorch"
 
 # ------------------------------------------------------------------ project
-$extras = "dev"
-if (-not $NoChronos) { $extras = "chronos,$extras" }
-if ($QLoRA) { $extras = "$extras,qlora" }
-Write-Host ">>> Installing project (editable) with extras [$extras]"
-& $VPy -m pip install -e ".[$extras]"
-if ($LASTEXITCODE -ne 0) { Write-Host "Project install failed" -ForegroundColor Red; exit 1 }
+Write-Host ">>> Installing the project (editable)"
+& $VPy -m pip install -e ".[dev]"
+Assert-Ok "Installing the project"
+if ($withQlora) {
+    Write-Host ">>> Installing bitsandbytes for QLoRA"
+    & $VPy -m pip install -e ".[qlora]"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: bitsandbytes could not be installed - QLoRA will fall back to LoRA." -ForegroundColor Yellow
+    }
+}
 
 Write-Host ">>> Environment check"
 & $VPy scripts\check_env.py
+Assert-Ok "The environment check"
 
 if ($Download) {
-    Write-Host ">>> Downloading dataset"
+    Write-Host ">>> Downloading the dataset"
     & $VPy scripts\00_download_data.py
-    if ($LASTEXITCODE -ne 0) { Write-Host "!!! Download failed - see README 'Dataset' for manual steps." -ForegroundColor Yellow }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: download failed - see README, section 'Dataset', for the manual steps." -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
-Write-Host "Done. Activate the environment with:" -ForegroundColor Green
-Write-Host "    .\$Venv\Scripts\Activate.ps1        (PowerShell)"
-Write-Host "    $Venv\Scripts\activate.bat          (cmd.exe)"
-Write-Host "Then e.g.:  python scripts\run_all.py   |   python scripts\demo.py --synthetic"
+Write-Host "Done. Next steps:" -ForegroundColor Green
+Write-Host "    .\run_pipeline.ps1                                # the whole experiment"
+Write-Host "    .\run_pipeline.ps1 --config configs/smoke.yaml    # quick check on fake data first"
+Write-Host "Or activate the environment and run the scripts yourself:"
+Write-Host "    .\$Venv\Scripts\Activate.ps1"
+Write-Host "    python scripts\run_all.py"
+Write-Host "(If activation is blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned)"

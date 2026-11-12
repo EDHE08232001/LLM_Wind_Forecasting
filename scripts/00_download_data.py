@@ -1,7 +1,7 @@
 """Download the SCADA (Kaggle) and MERRA-2 weather (NASA POWER) files into data/raw/.
 
     python scripts/00_download_data.py                 # real data
-    python scripts/00_download_data.py --synthetic     # fake data in the same format (for smoke tests)
+    python scripts/00_download_data.py --synthetic     # fake data in the same format (smoke config)
 """
 
 from _common import base_arg_parser, load_config

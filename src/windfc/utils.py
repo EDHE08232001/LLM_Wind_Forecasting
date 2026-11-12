@@ -66,7 +66,7 @@ def append_rows(path: Path, rows: list[dict]) -> None:
 def save_run_config(cfg: Config, out_dir: Path, tag: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"config_{tag}.json"
-    payload = {k: v for k, v in cfg.items()}
+    payload = dict(cfg.items())
     payload["_git_commit"] = git_commit()
     payload["_saved_at"] = now()
     path.write_text(json.dumps(payload, indent=2, default=str))
